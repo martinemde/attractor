@@ -106,5 +106,8 @@ func DefaultRegistryWithInterviewer(interviewer Interviewer) *HandlerRegistry {
 	// Register tool handler for shape=parallelogram
 	r.Register("tool", &ToolHandler{})
 
+	// Register manager loop handler for shape=house
+	r.Register("stack.manager_loop", NewManagerLoopHandler())
+
 	return r
 }

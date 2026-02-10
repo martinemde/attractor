@@ -195,7 +195,8 @@ func Resume(graph *dotparser.Graph, config *RunConfig) (*RunResult, error) {
 	}
 
 	// Continue execution from the restored state
-	return runFromState(graph, config, ctx, completedNodes, nextNode)
+	// Use checkpoint timestamp as start time for resumed runs
+	return runFromState(graph, config, ctx, completedNodes, nextNode, cp.Timestamp)
 }
 
 // runFromState executes the pipeline from a given state.
@@ -206,6 +207,7 @@ func runFromState(
 	ctx *Context,
 	completedNodes []string,
 	currentNode *dotparser.Node,
+	startTime time.Time,
 ) (*RunResult, error) {
 	registry := config.Registry
 	if registry == nil {
@@ -217,7 +219,10 @@ func runFromState(
 		sleeper = DefaultSleeper
 	}
 
+	emitter := config.EventEmitter
+
 	nodeOutcomes := make(map[string]*Outcome)
+	stageIndex := len(completedNodes)
 
 	var lastOutcome *Outcome
 
@@ -246,14 +251,31 @@ func runFromState(
 			return nil, fmt.Errorf("no handler found for node %q", currentNode.ID)
 		}
 
+		// Emit stage started event
+		stageStartTime := time.Now()
+		if emitter != nil {
+			emitter.Emit(StageStartedEvent(currentNode.ID, stageIndex))
+		}
+
 		// Step 3: Execute node handler with retry policy
 		retryPolicy := BuildRetryPolicy(currentNode, graph)
 		outcome := executeWithRetry(handler, currentNode, ctx, graph, config.LogsRoot, retryPolicy, sleeper)
+
+		// Emit stage completed/failed event
+		stageDuration := time.Since(stageStartTime)
+		if emitter != nil {
+			if outcome.Status == StatusFail {
+				emitter.Emit(StageFailedEvent(currentNode.ID, stageIndex, outcome.FailureReason, false))
+			} else {
+				emitter.Emit(StageCompletedEvent(currentNode.ID, stageIndex, stageDuration))
+			}
+		}
 
 		// Step 4: Record completion
 		completedNodes = append(completedNodes, currentNode.ID)
 		nodeOutcomes[currentNode.ID] = outcome
 		lastOutcome = outcome
+		stageIndex++
 
 		// Step 5: Apply context updates from outcome
 		if outcome.ContextUpdates != nil {
@@ -277,6 +299,10 @@ func runFromState(
 			cp := buildCheckpoint(currentNode.ID, completedNodes, ctx)
 			if err := SaveCheckpoint(cp, config.LogsRoot); err != nil {
 				ctx.AppendLog(fmt.Sprintf("failed to save checkpoint: %v", err))
+			}
+			// Emit checkpoint saved event
+			if emitter != nil {
+				emitter.Emit(CheckpointSavedEvent(currentNode.ID))
 			}
 		}
 

@@ -31,6 +31,18 @@ type RunConfig struct {
 	// Sleeper is used for delays during retries. If nil, DefaultSleeper is used.
 	// This allows tests to inject a mock sleeper to avoid actual delays.
 	Sleeper Sleeper
+
+	// EventEmitter receives pipeline events for observability.
+	// If nil, no events are emitted.
+	EventEmitter *EventEmitter
+
+	// PreToolHook is a shell command to run before tool calls.
+	// Tool metadata is passed via environment variables.
+	PreToolHook string
+
+	// PostToolHook is a shell command to run after tool calls.
+	// Tool metadata and result are passed via environment variables.
+	PostToolHook string
 }
 
 // RunResult contains the results of a pipeline execution.
@@ -125,9 +137,30 @@ func Run(graph *dotparser.Graph, config *RunConfig) (*RunResult, error) {
 		return nil, errors.New("no start node found (shape=Mdiamond or id=start/Start)")
 	}
 
+	// Generate a unique run ID
+	runID := fmt.Sprintf("run-%d", startTime.UnixNano())
+
+	// Emit pipeline started event
+	if config.EventEmitter != nil {
+		config.EventEmitter.Emit(PipelineStartedEvent(graph.Name, runID))
+	}
+
 	completedNodes := []string{}
 
-	return runFromState(graph, config, ctx, completedNodes, currentNode)
+	result, err := runFromState(graph, config, ctx, completedNodes, currentNode, startTime)
+
+	// Emit pipeline completion event
+	if config.EventEmitter != nil {
+		duration := time.Since(startTime)
+		if err != nil {
+			config.EventEmitter.Emit(PipelineFailedEvent(err.Error(), duration))
+		} else {
+			artifactCount := len(result.CompletedNodes)
+			config.EventEmitter.Emit(PipelineCompletedEvent(duration, artifactCount))
+		}
+	}
+
+	return result, err
 }
 
 // executeWithRetry executes a handler with retry logic.
