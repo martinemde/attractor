@@ -57,31 +57,44 @@ type Interviewer interface {
 
 // Question represents a question to present to a human.
 type Question struct {
-	Text    string
-	Type    QuestionType
-	Options []Option
-	Stage   string
+	Text           string         // The question to present to the human
+	Type           QuestionType   // Determines the UI and valid answers
+	Options        []Option       // For MULTIPLE_CHOICE type
+	Default        *Answer        // Default if timeout/skip
+	TimeoutSeconds float64        // Max wait time (0 means no timeout)
+	Stage          string         // Originating stage name (for display)
+	Metadata       map[string]any // Arbitrary key-value pairs
 }
 
 // QuestionType represents the type of question.
 type QuestionType string
 
 const (
-	QuestionMultipleChoice QuestionType = "multiple_choice"
-	QuestionFreeform       QuestionType = "freeform"
+	QuestionYesNo          QuestionType = "yes_no"          // Yes/no binary choice
+	QuestionMultipleChoice QuestionType = "multiple_choice" // Select one from a list
+	QuestionFreeform       QuestionType = "freeform"        // Free text input
+	QuestionConfirmation   QuestionType = "confirmation"    // Yes/no confirmation
 )
 
 // Option represents a choice in a multiple choice question.
 type Option struct {
-	Key   string
-	Label string
+	Key   string // Accelerator key (e.g., "Y", "A")
+	Label string // Display text (e.g., "Yes, deploy to production")
 }
+
+// Common answer values for yes/no and confirmation questions.
+const (
+	AnswerYes = "yes"
+	AnswerNo  = "no"
+)
 
 // Answer represents a human's response to a question.
 type Answer struct {
-	Value   string
-	Skipped bool
-	Timeout bool
+	Value          string  // The selected value (e.g., AnswerYes, option key)
+	SelectedOption *Option // The full selected option (for MULTIPLE_CHOICE)
+	Text           string  // Free text response (for FREEFORM)
+	Skipped        bool    // Human skipped the question
+	Timeout        bool    // No response within timeout
 }
 
 // Run executes a pipeline graph from start to completion.

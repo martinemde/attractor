@@ -209,7 +209,7 @@ func runFromState(
 ) (*RunResult, error) {
 	registry := config.Registry
 	if registry == nil {
-		registry = DefaultRegistry()
+		registry = DefaultRegistryWithInterviewer(config.Interviewer)
 	}
 
 	sleeper := config.Sleeper

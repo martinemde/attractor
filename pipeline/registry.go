@@ -74,7 +74,14 @@ func (r *HandlerRegistry) Resolve(node *dotparser.Node) Handler {
 
 // DefaultRegistry creates a HandlerRegistry with the standard handlers registered.
 // This includes start, exit, and codergen handlers.
+// For human-in-the-loop support, use DefaultRegistryWithInterviewer instead.
 func DefaultRegistry() *HandlerRegistry {
+	return DefaultRegistryWithInterviewer(nil)
+}
+
+// DefaultRegistryWithInterviewer creates a HandlerRegistry with standard handlers
+// and configures the wait.human handler with the provided interviewer.
+func DefaultRegistryWithInterviewer(interviewer Interviewer) *HandlerRegistry {
 	r := NewHandlerRegistry()
 	r.Register("start", &StartHandler{})
 	r.Register("exit", &ExitHandler{})
@@ -83,6 +90,9 @@ func DefaultRegistry() *HandlerRegistry {
 	codergenHandler := NewCodergenHandler(nil) // simulation mode
 	r.Register("codergen", codergenHandler)
 	r.SetDefaultHandler(codergenHandler)
+
+	// Register wait.human handler for shape=hexagon
+	r.Register("wait.human", NewWaitForHumanHandler(interviewer))
 
 	return r
 }
