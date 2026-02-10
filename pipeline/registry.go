@@ -97,5 +97,11 @@ func DefaultRegistryWithInterviewer(interviewer Interviewer) *HandlerRegistry {
 	// Register conditional handler for shape=diamond
 	r.Register("conditional", &ConditionalHandler{})
 
+	// Register parallel handler for shape=component
+	r.Register("parallel", &ParallelHandler{})
+
+	// Register fan-in handler for shape=tripleoctagon
+	r.Register("parallel.fan_in", &FanInHandler{})
+
 	return r
 }
