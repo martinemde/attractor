@@ -90,16 +90,6 @@ func Run(graph *dotparser.Graph, config *RunConfig) (*RunResult, error) {
 		config = &RunConfig{}
 	}
 
-	registry := config.Registry
-	if registry == nil {
-		registry = DefaultRegistry()
-	}
-
-	sleeper := config.Sleeper
-	if sleeper == nil {
-		sleeper = DefaultSleeper
-	}
-
 	// Apply transforms before execution
 	if len(config.Transforms) > 0 {
 		graph = ApplyTransforms(graph, config.Transforms)
@@ -107,9 +97,6 @@ func Run(graph *dotparser.Graph, config *RunConfig) (*RunResult, error) {
 
 	ctx := NewContext()
 	mirrorGraphAttributes(graph, ctx)
-
-	completedNodes := []string{}
-	nodeOutcomes := make(map[string]*Outcome)
 
 	// Write manifest.json at run initialization
 	startTime := time.Now()
@@ -125,83 +112,9 @@ func Run(graph *dotparser.Graph, config *RunConfig) (*RunResult, error) {
 		return nil, errors.New("no start node found (shape=Mdiamond or id=start/Start)")
 	}
 
-	var lastOutcome *Outcome
+	completedNodes := []string{}
 
-	for {
-		// Step 1: Check for terminal node with goal gate enforcement
-		if isTerminal(currentNode) {
-			gateOK, failedGate := checkGoalGates(graph, nodeOutcomes)
-			if !gateOK && failedGate != nil {
-				// Goal gate unsatisfied, try to find retry target
-				retryTarget := getRetryTarget(failedGate, graph)
-				if retryTarget != "" {
-					nextNode := graph.NodeByID(retryTarget)
-					if nextNode != nil {
-						currentNode = nextNode
-						continue
-					}
-				}
-				return nil, fmt.Errorf("goal gate %q unsatisfied and no retry target available", failedGate.ID)
-			}
-			break
-		}
-
-		// Step 2: Resolve handler
-		handler := registry.Resolve(currentNode)
-		if handler == nil {
-			return nil, fmt.Errorf("no handler found for node %q", currentNode.ID)
-		}
-
-		// Step 3: Execute node handler with retry policy
-		retryPolicy := BuildRetryPolicy(currentNode, graph)
-		outcome := executeWithRetry(handler, currentNode, ctx, graph, config.LogsRoot, retryPolicy, sleeper)
-
-		// Step 4: Record completion
-		completedNodes = append(completedNodes, currentNode.ID)
-		nodeOutcomes[currentNode.ID] = outcome
-		lastOutcome = outcome
-
-		// Step 5: Apply context updates from outcome
-		if outcome.ContextUpdates != nil {
-			ctx.ApplyUpdates(outcome.ContextUpdates)
-		}
-		ctx.Set("outcome", outcome.Status.String())
-		if outcome.PreferredLabel != "" {
-			ctx.Set("preferred_label", outcome.PreferredLabel)
-		}
-
-		// Step 6: Write status.json
-		if config.LogsRoot != "" {
-			if err := writeNodeStatus(config.LogsRoot, currentNode.ID, outcome); err != nil {
-				// Log error but don't fail the pipeline
-				ctx.AppendLog(fmt.Sprintf("failed to write status for %s: %v", currentNode.ID, err))
-			}
-		}
-
-		// Step 7: Select next edge with failure routing
-		nextEdge := selectNextEdgeWithFailureRouting(currentNode, outcome, ctx, graph)
-		if nextEdge == nil {
-			if outcome.Status == StatusFail {
-				return nil, fmt.Errorf("stage %q failed with no outgoing fail edge and no retry target", currentNode.ID)
-			}
-			// No edge found, but not a failure - break naturally
-			break
-		}
-
-		// Step 8: Advance to next node
-		nextNode := graph.NodeByID(nextEdge.To)
-		if nextNode == nil {
-			return nil, fmt.Errorf("edge target node %q not found", nextEdge.To)
-		}
-		currentNode = nextNode
-	}
-
-	return &RunResult{
-		FinalOutcome:   lastOutcome,
-		CompletedNodes: completedNodes,
-		Context:        ctx,
-		NodeOutcomes:   nodeOutcomes,
-	}, nil
+	return runFromState(graph, config, ctx, completedNodes, currentNode)
 }
 
 // executeWithRetry executes a handler with retry logic.
