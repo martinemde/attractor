@@ -214,14 +214,13 @@ func (s *PipelineServer) handleGetPipeline(w http.ResponseWriter, r *http.Reques
 
 	s.mu.RLock()
 	pipeline, ok := s.pipelines[id]
-	s.mu.RUnlock()
-
 	if !ok {
+		s.mu.RUnlock()
 		http.Error(w, "pipeline not found", http.StatusNotFound)
 		return
 	}
 
-	// Create a response struct
+	// Build response while holding the lock to avoid races with runPipeline
 	response := struct {
 		ID        string     `json:"id"`
 		Status    string     `json:"status"`
@@ -233,6 +232,7 @@ func (s *PipelineServer) handleGetPipeline(w http.ResponseWriter, r *http.Reques
 		StartTime: pipeline.StartTime,
 		EndTime:   pipeline.EndTime,
 	}
+	s.mu.RUnlock()
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
