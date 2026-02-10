@@ -1,0 +1,40 @@
+// A larger pipeline with multiple stages, subgraph scoping, and stylesheet
+digraph MultiStage {
+    graph [
+        goal="Build, test, and deploy a web service",
+        model_stylesheet="
+            * { llm_model: claude-sonnet-4-5; llm_provider: anthropic; }
+            .code { llm_model: claude-opus-4-6; reasoning_effort: high; }
+            #security_review { llm_model: o3; llm_provider: openai; reasoning_effort: high; }
+        "
+    ]
+    rankdir=LR
+    node [shape=box]
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    subgraph cluster_planning {
+        label = "Planning"
+        node [timeout=300s]
+
+        gather_requirements [label="Gather Requirements", prompt="Analyze the requirements for: $goal"]
+        design              [label="Design Architecture", prompt="Design the system architecture"]
+    }
+
+    subgraph cluster_implementation {
+        label = "Implementation"
+        node [timeout=900s]
+
+        implement       [label="Write Code", prompt="Implement the design", class="code", goal_gate=true, retry_target="implement"]
+        write_tests     [label="Write Tests", prompt="Write comprehensive tests", class="code"]
+    }
+
+    run_tests       [label="Run Tests", prompt="Execute the test suite"]
+    security_review [label="Security Review", prompt="Review for security vulnerabilities"]
+    deploy_check    [shape=diamond, label="Ready to deploy?"]
+
+    start -> gather_requirements -> design -> implement -> write_tests -> run_tests -> security_review -> deploy_check
+    deploy_check -> exit      [label="Yes", condition="outcome=success", weight=10]
+    deploy_check -> implement [label="No", condition="outcome!=success"]
+}

@@ -1,0 +1,17 @@
+// Pipeline that exercises retry logic with max_retries
+digraph RetryPipeline {
+    graph [goal="Test retry behavior"]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    flaky_task [
+        label="Flaky Task",
+        prompt="Run a flaky operation",
+        max_retries=3,
+        allow_partial=true
+    ]
+
+    start -> flaky_task -> exit
+}

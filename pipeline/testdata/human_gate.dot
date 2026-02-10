@@ -1,0 +1,19 @@
+// Pipeline with human-in-the-loop review gate
+digraph HumanGate {
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    implement [label="Implement Feature", prompt="Write the code"]
+
+    review_gate [
+        shape=hexagon,
+        label="Review Changes",
+        type="wait.human"
+    ]
+
+    start -> implement -> review_gate
+    review_gate -> exit  [label="[A] Approve"]
+    review_gate -> implement [label="[F] Fix"]
+}

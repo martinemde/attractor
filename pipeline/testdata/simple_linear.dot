@@ -1,0 +1,12 @@
+// Minimal linear pipeline: start -> task -> exit
+digraph SimpleLinear {
+    graph [goal="Run a single task and exit"]
+    rankdir=LR
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    task [label="Do Work", prompt="Complete the assigned task for: $goal"]
+
+    start -> task -> exit
+}
