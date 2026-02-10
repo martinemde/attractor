@@ -1,5 +1,3 @@
-// Package unifiedllm provides a unified LLM client SDK that wraps gollm to
-// present a provider-agnostic interface conforming to the unified-llm-spec.
 package unifiedllm
 
 import (

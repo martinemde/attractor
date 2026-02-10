@@ -1,13 +1,13 @@
-// Package unifiedllm provides a unified LLM client SDK that wraps the gollm
-// library (github.com/teilomillet/gollm) to present a provider-agnostic
-// interface conforming to the unified-llm-spec.
+// Package unifiedllm provides a unified LLM client SDK with native HTTP
+// provider adapters for OpenAI, Anthropic, and Gemini, presenting a
+// provider-agnostic interface conforming to the unified-llm-spec.
 //
 // # Architecture
 //
 // The package follows a four-layer architecture:
 //
 //   - Layer 1 (Provider Specification): ProviderAdapter interface and shared types
-//   - Layer 2 (Provider Utilities): Retry logic, error classification helpers
+//   - Layer 2 (Provider Utilities): HTTP client, SSE parsing, retry logic, error classification
 //   - Layer 3 (Core Client): Client with provider routing and middleware
 //   - Layer 4 (High-Level API): Generate, StreamGenerate, GenerateObject functions
 //
@@ -23,7 +23,7 @@
 //
 // Using the Client directly:
 //
-//	adapter, _ := unifiedllm.NewGollmAdapter("openai", os.Getenv("OPENAI_API_KEY"))
+//	adapter, _ := unifiedllm.NewOpenAIAdapter(os.Getenv("OPENAI_API_KEY"))
 //	client := unifiedllm.NewClient(unifiedllm.WithProvider("openai", adapter))
 //
 //	resp, _ := client.Complete(ctx, unifiedllm.Request{
@@ -32,11 +32,13 @@
 //	})
 //	fmt.Println(resp.Text())
 //
-// # GollmAdapter
+// # Native Provider Adapters
 //
-// The GollmAdapter wraps gollm.LLM to implement the ProviderAdapter interface.
-// It translates between the unified spec types and gollm's native API, supporting
-// OpenAI, Anthropic, and other providers that gollm supports.
+// Three native HTTP adapters speak each provider's API directly:
+//
+//   - OpenAIAdapter: Uses the Responses API (/v1/responses) for reasoning token support
+//   - AnthropicAdapter: Uses the Messages API (/v1/messages) with prompt caching
+//   - GeminiAdapter: Uses the Gemini API (/v1beta/models/*/generateContent)
 //
 // # Tool Calling
 //
