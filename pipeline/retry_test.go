@@ -96,7 +96,7 @@ func TestBackoffConfig_DelayForAttempt_JitterBounds(t *testing.T) {
 	minExpected := 500 * time.Millisecond  // 1000 * 0.5
 	maxExpected := 1500 * time.Millisecond // 1000 * 1.5
 
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		delay := config.DelayForAttempt(1)
 		assert.GreaterOrEqual(t, delay, minExpected, "delay should be at least 50%% of base")
 		assert.Less(t, delay, maxExpected, "delay should be less than 150%% of base")

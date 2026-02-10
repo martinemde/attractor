@@ -215,10 +215,7 @@ func executeWithRetry(
 	policy *RetryPolicy,
 	sleeper Sleeper,
 ) *Outcome {
-	maxAttempts := policy.MaxAttempts
-	if maxAttempts < 1 {
-		maxAttempts = 1
-	}
+	maxAttempts := max(policy.MaxAttempts, 1)
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		// Execute the handler
