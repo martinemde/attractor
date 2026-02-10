@@ -172,7 +172,7 @@ func (a *GollmAdapter) Stream(ctx context.Context, req Request) (<-chan StreamEv
 
 			text, err := a.llm.Generate(ctx, prompt)
 			if err != nil {
-				ch <- StreamEvent{Type: StreamError, Error: a.translateError(err)}
+				ch <- StreamEvent{Type: EventError, Error: a.translateError(err)}
 				return
 			}
 
@@ -214,7 +214,7 @@ func (a *GollmAdapter) Stream(ctx context.Context, req Request) (<-chan StreamEv
 				break
 			}
 			if err != nil {
-				ch <- StreamEvent{Type: StreamError, Error: a.translateError(err)}
+				ch <- StreamEvent{Type: EventError, Error: a.translateError(err)}
 				return
 			}
 			if token == nil {

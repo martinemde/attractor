@@ -225,7 +225,7 @@ func NewClientFromEnv() *Client {
 
 	// Register providers based on available environment variables.
 	// The GollmAdapter handles provider-specific env var lookup internally.
-	for _, provider := range []string{"openai", "anthropic"} {
+	for _, provider := range []string{"openai", "anthropic", "gemini"} {
 		adapter, err := NewGollmAdapter(provider, "")
 		if err == nil {
 			c.RegisterProvider(provider, adapter)

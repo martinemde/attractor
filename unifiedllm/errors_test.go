@@ -54,7 +54,7 @@ func TestIsRetryable(t *testing.T) {
 		{"rate limit", &RateLimitError{ProviderError: ProviderError{Retryable: true}}, true},
 		{"server error", &ServerError{ProviderError: ProviderError{Retryable: true}}, true},
 		{"network error", &NetworkError{}, true},
-		{"stream error", &StreamErrorType{}, true},
+		{"stream error", &StreamError{}, true},
 		{"timeout error", &RequestTimeoutError{}, true},
 		{"unknown error", errors.New("unknown"), true},
 	}

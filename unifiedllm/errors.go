@@ -51,7 +51,7 @@ type QuotaExceededError struct{ ProviderError }
 type RequestTimeoutError struct{ SDKError }
 type AbortError struct{ SDKError }
 type NetworkError struct{ SDKError }
-type StreamErrorType struct{ SDKError }
+type StreamError struct{ SDKError }
 type InvalidToolCallError struct{ SDKError }
 type NoObjectGeneratedError struct{ SDKError }
 type ConfigurationError struct{ SDKError }
@@ -129,7 +129,7 @@ func IsRetryable(err error) bool {
 		return true
 	case *NetworkError:
 		return true
-	case *StreamErrorType:
+	case *StreamError:
 		return true
 	case *RequestTimeoutError:
 		return true

@@ -379,7 +379,7 @@ const (
 	ToolCallDelta    StreamEventType = "tool_call_delta"
 	ToolCallEnd      StreamEventType = "tool_call_end"
 	StreamFinish     StreamEventType = "finish"
-	StreamError      StreamEventType = "error"
+	EventError       StreamEventType = "error"
 	ProviderEvent    StreamEventType = "provider_event"
 )
 
