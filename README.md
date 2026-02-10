@@ -1,5 +1,8 @@
 # Attractor 
 
+> [!NOTE]
+> This is a fork of https://github.com/strongdm/attractor where Claude is creating an implementation in Go.
+
 This repository contains [NLSpecs](#terminology) to build your own version of Attractor to create your own software factory.
 
 Although bringing your own agentic loop and unified LLM SDK is not required to build your own Attractor, we highly recommend controlling the stack so you have a strong foundation.
