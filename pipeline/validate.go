@@ -432,22 +432,12 @@ type FidelityValidRule struct{}
 
 func (r *FidelityValidRule) Name() string { return "fidelity_valid" }
 
-// validFidelityModes lists all valid fidelity modes from the spec Section 5.4.
-var validFidelityModes = map[string]bool{
-	"full":           true,
-	"truncate":       true,
-	"compact":        true,
-	"summary:low":    true,
-	"summary:medium": true,
-	"summary:high":   true,
-}
-
 func (r *FidelityValidRule) Apply(graph *dotparser.Graph) []Diagnostic {
 	var diagnostics []Diagnostic
 
 	// Check graph-level fidelity
 	if fidelityAttr, ok := graph.GraphAttr("default_fidelity"); ok && fidelityAttr.Str != "" {
-		if !validFidelityModes[fidelityAttr.Str] {
+		if !IsValidFidelity(fidelityAttr.Str) {
 			diagnostics = append(diagnostics, Diagnostic{
 				Rule:     r.Name(),
 				Severity: SeverityWarning,
@@ -460,7 +450,7 @@ func (r *FidelityValidRule) Apply(graph *dotparser.Graph) []Diagnostic {
 	// Check node-level fidelity
 	for _, node := range graph.Nodes {
 		if fidelityAttr, ok := node.Attr("fidelity"); ok && fidelityAttr.Str != "" {
-			if !validFidelityModes[fidelityAttr.Str] {
+			if !IsValidFidelity(fidelityAttr.Str) {
 				diagnostics = append(diagnostics, Diagnostic{
 					Rule:     r.Name(),
 					Severity: SeverityWarning,
@@ -475,7 +465,7 @@ func (r *FidelityValidRule) Apply(graph *dotparser.Graph) []Diagnostic {
 	// Check edge-level fidelity
 	for _, edge := range graph.Edges {
 		if fidelityAttr, ok := edge.Attr("fidelity"); ok && fidelityAttr.Str != "" {
-			if !validFidelityModes[fidelityAttr.Str] {
+			if !IsValidFidelity(fidelityAttr.Str) {
 				diagnostics = append(diagnostics, Diagnostic{
 					Rule:     r.Name(),
 					Severity: SeverityWarning,

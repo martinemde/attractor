@@ -103,5 +103,8 @@ func DefaultRegistryWithInterviewer(interviewer Interviewer) *HandlerRegistry {
 	// Register fan-in handler for shape=tripleoctagon
 	r.Register("parallel.fan_in", &FanInHandler{})
 
+	// Register tool handler for shape=parallelogram
+	r.Register("tool", &ToolHandler{})
+
 	return r
 }

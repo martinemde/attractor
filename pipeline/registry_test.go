@@ -230,3 +230,74 @@ func TestDefaultRegistry(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, StatusSuccess, outcome.Status)
 }
+
+// TestCustomHandlerEndToEnd demonstrates end-to-end custom handler registration
+// and execution through a pipeline, as per Section 4.12 of the spec.
+func TestCustomHandlerEndToEnd(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Define a custom handler that implements business logic
+	customExecuted := false
+	customContextValue := ""
+
+	customHandler := HandlerFunc(func(node *dotparser.Node, ctx *Context, graph *dotparser.Graph, logsRoot string) (*Outcome, error) {
+		customExecuted = true
+
+		// Read a custom attribute
+		if customAttr, ok := node.Attr("custom_attr"); ok {
+			customContextValue = customAttr.Str
+		}
+
+		return Success().
+			WithContextUpdate("custom.executed", true).
+			WithContextUpdate("custom.value", customContextValue).
+			WithNotes("Custom handler executed for " + node.ID), nil
+	})
+
+	// Register the custom handler
+	registry := DefaultRegistry()
+	registry.Register("my_custom_type", customHandler)
+
+	// Create a graph that uses the custom handler
+	graph := newTestGraph(
+		[]*dotparser.Node{
+			newNode("start", strAttr("shape", "Mdiamond")),
+			newNode("custom_node",
+				strAttr("type", "my_custom_type"),
+				strAttr("custom_attr", "test_value"),
+				strAttr("label", "Custom Processing"),
+			),
+			newNode("exit", strAttr("shape", "Msquare")),
+		},
+		[]*dotparser.Edge{
+			newEdge("start", "custom_node"),
+			newEdge("custom_node", "exit"),
+		},
+		nil,
+	)
+
+	// Run the pipeline
+	result, err := Run(graph, &RunConfig{
+		Registry: registry,
+		LogsRoot: tmpDir,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusSuccess, result.FinalOutcome.Status)
+
+	// Verify the custom handler was executed
+	assert.True(t, customExecuted, "Custom handler should have been executed")
+	assert.Equal(t, "test_value", customContextValue, "Custom handler should have read custom_attr")
+
+	// Verify the completed nodes include our custom node
+	assert.Contains(t, result.CompletedNodes, "custom_node")
+
+	// Verify context updates from the custom handler were applied
+	executed, ok := result.Context.Get("custom.executed")
+	assert.True(t, ok)
+	assert.Equal(t, true, executed)
+
+	value, ok := result.Context.Get("custom.value")
+	assert.True(t, ok)
+	assert.Equal(t, "test_value", value)
+}
