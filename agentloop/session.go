@@ -121,6 +121,14 @@ func (s *Session) History() []Turn {
 	return h
 }
 
+// PrependHistory inserts turns at the beginning of the conversation history.
+// This is useful for providing context from prior pipeline stages.
+func (s *Session) PrependHistory(turns []Turn) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.history = append(turns, s.history...)
+}
+
 // Events returns the event channel for the host application.
 func (s *Session) Events() <-chan SessionEvent {
 	return s.emitter.Events()

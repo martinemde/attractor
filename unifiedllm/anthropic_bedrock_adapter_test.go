@@ -10,9 +10,25 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// staticTestCredentialsProvider implements aws.CredentialsProvider for testing.
+type staticTestCredentialsProvider struct {
+	accessKey    string
+	secretKey    string
+	sessionToken string
+}
+
+func (p staticTestCredentialsProvider) Retrieve(_ context.Context) (aws.Credentials, error) {
+	return aws.Credentials{
+		AccessKeyID:     p.accessKey,
+		SecretAccessKey: p.secretKey,
+		SessionToken:    p.sessionToken,
+	}, nil
+}
 
 func newTestBedrockAdapter(t *testing.T, handler http.HandlerFunc) (*AnthropicBedrockAdapter, *httptest.Server) {
 	t.Helper()
@@ -721,6 +737,70 @@ func TestAnthropicBedrockAdapterConstructorWithOptions(t *testing.T) {
 	assert.Equal(t, "SECRET", adapter.creds.SecretAccessKey)
 	assert.Equal(t, "TOKEN", adapter.creds.SessionToken)
 	assert.Equal(t, "https://custom-endpoint.example.com", adapter.baseURL)
+}
+
+func TestAnthropicBedrockAdapterCredentialsProvider(t *testing.T) {
+	t.Setenv("AWS_REGION", "")
+	t.Setenv("AWS_DEFAULT_REGION", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		// Verify SigV4 was applied with provider credentials.
+		assert.NotEmpty(t, r.Header.Get("Authorization"))
+		assert.NotEmpty(t, r.Header.Get("x-amz-security-token"))
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id": "msg_cp", "model": "anthropic.claude-opus-4-6-v1:0",
+			"content":     []interface{}{map[string]interface{}{"type": "text", "text": "ok"}},
+			"stop_reason": "end_turn",
+			"usage":       map[string]interface{}{"input_tokens": float64(1), "output_tokens": float64(1)},
+		})
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(handler))
+	defer server.Close()
+
+	provider := staticTestCredentialsProvider{
+		accessKey:    "AKIAIOSFODNN7EXAMPLE",
+		secretKey:    "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+		sessionToken: "TestSessionToken",
+	}
+
+	adapter, err := NewAnthropicBedrockAdapter(
+		WithBedrockRegion("us-west-2"),
+		WithBedrockCredentialsProvider(provider),
+		WithBedrockBaseURL(server.URL),
+	)
+	require.NoError(t, err)
+
+	resp, err := adapter.Complete(context.Background(), Request{
+		Model:    "anthropic.claude-opus-4-6-v1:0",
+		Messages: []Message{UserMessage("test")},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "ok", resp.Text())
+}
+
+func TestAnthropicBedrockAdapterCredentialsProviderSkipsStaticCheck(t *testing.T) {
+	t.Setenv("AWS_REGION", "")
+	t.Setenv("AWS_DEFAULT_REGION", "")
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+
+	provider := staticTestCredentialsProvider{
+		accessKey: "AKID",
+		secretKey: "SECRET",
+	}
+
+	// Should succeed without static creds when a provider is set.
+	adapter, err := NewAnthropicBedrockAdapter(
+		WithBedrockRegion("us-east-1"),
+		WithBedrockCredentialsProvider(provider),
+	)
+	require.NoError(t, err)
+	assert.NotNil(t, adapter)
 }
 
 func TestAnthropicBedrockAdapterSupportsToolChoice(t *testing.T) {

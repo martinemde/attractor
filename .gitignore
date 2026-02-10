@@ -8,6 +8,9 @@ attractor
 *.out
 *.prof
 
+# Logs
+logs/
+
 # Dependency directories
 vendor/
 

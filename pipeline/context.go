@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"sync"
@@ -12,6 +13,7 @@ type Context struct {
 	mu     sync.RWMutex
 	values map[string]any
 	logs   []string
+	goCtx  context.Context // Go context for cancellation propagation
 }
 
 // NewContext creates a new empty Context.
@@ -64,6 +66,24 @@ func (c *Context) Logs() []string {
 	result := make([]string, len(c.logs))
 	copy(result, c.logs)
 	return result
+}
+
+// SetGoCtx sets the Go context for cancellation propagation.
+func (c *Context) SetGoCtx(ctx context.Context) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.goCtx = ctx
+}
+
+// GoCtx returns the Go context for cancellation propagation.
+// Returns context.Background() if no Go context has been set.
+func (c *Context) GoCtx() context.Context {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.goCtx == nil {
+		return context.Background()
+	}
+	return c.goCtx
 }
 
 // Snapshot returns a shallow copy of all context values.

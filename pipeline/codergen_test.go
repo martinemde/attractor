@@ -182,7 +182,7 @@ func TestCodergenHandler_NoLogsRoot(t *testing.T) {
 	assert.Equal(t, StatusSuccess, outcome.Status)
 }
 
-func TestCodergenHandler_ResponseTruncation(t *testing.T) {
+func TestCodergenHandler_FullResponseStored(t *testing.T) {
 	longResponse := make([]byte, 300)
 	for i := range longResponse {
 		longResponse[i] = 'a'
@@ -197,9 +197,10 @@ func TestCodergenHandler_ResponseTruncation(t *testing.T) {
 	outcome, err := handler.Execute(node, ctx, graph, "")
 	require.NoError(t, err)
 
+	// Full response should be stored without truncation
 	lastResponse := outcome.ContextUpdates["last_response"].(string)
-	assert.Len(t, lastResponse, 200)
-	assert.True(t, lastResponse[len(lastResponse)-3:] == "...")
+	assert.Len(t, lastResponse, 300)
+	assert.Equal(t, string(longResponse), lastResponse)
 }
 
 func TestVariableExpansionTransform(t *testing.T) {

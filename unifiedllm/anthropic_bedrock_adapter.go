@@ -11,6 +11,9 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 )
 
 // AnthropicBedrockAdapter implements ProviderAdapter for Anthropic models
@@ -20,10 +23,11 @@ import (
 // but authentication uses AWS Signature V4 and the model ID is specified
 // in the URL path rather than the request body.
 type AnthropicBedrockAdapter struct {
-	region  string
-	creds   awsCredentials
-	baseURL string
-	http    *httpClient
+	region        string
+	creds         awsCredentials
+	credsProvider aws.CredentialsProvider
+	baseURL       string
+	http          *httpClient
 
 	// format provides shared Anthropic message format helpers.
 	format *AnthropicAdapter
@@ -47,6 +51,15 @@ func WithBedrockCredentials(accessKey, secretKey, sessionToken string) Anthropic
 			SecretAccessKey: secretKey,
 			SessionToken:   sessionToken,
 		}
+	}
+}
+
+// WithBedrockCredentialsProvider sets an AWS credentials provider for dynamic
+// credential resolution (e.g. SSO, IMDS, assume-role). When set, static
+// credentials are resolved from this provider on each request.
+func WithBedrockCredentialsProvider(provider aws.CredentialsProvider) AnthropicBedrockAdapterOption {
+	return func(a *AnthropicBedrockAdapter) {
+		a.credsProvider = provider
 	}
 }
 
@@ -96,9 +109,9 @@ func NewAnthropicBedrockAdapter(opts ...AnthropicBedrockAdapterOption) (*Anthrop
 			Message: "AWS region is required: set AWS_REGION or use WithBedrockRegion",
 		}}
 	}
-	if a.creds.AccessKeyID == "" || a.creds.SecretAccessKey == "" {
+	if a.credsProvider == nil && (a.creds.AccessKeyID == "" || a.creds.SecretAccessKey == "") {
 		return nil, &ConfigurationError{SDKError: SDKError{
-			Message: "AWS credentials are required: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY or use WithBedrockCredentials",
+			Message: "AWS credentials are required: set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, use WithBedrockCredentials, or use WithBedrockCredentialsProvider",
 		}}
 	}
 
@@ -107,6 +120,42 @@ func NewAnthropicBedrockAdapter(opts ...AnthropicBedrockAdapterOption) (*Anthrop
 	}
 
 	return a, nil
+}
+
+// resolveCredentials returns AWS credentials for signing. When a credentials
+// provider is configured it retrieves fresh credentials (important for SSO
+// tokens which expire). Otherwise it returns the static credentials.
+func (a *AnthropicBedrockAdapter) resolveCredentials(ctx context.Context) (awsCredentials, error) {
+	if a.credsProvider == nil {
+		return a.creds, nil
+	}
+	v, err := a.credsProvider.Retrieve(ctx)
+	if err != nil {
+		return awsCredentials{}, &ConfigurationError{SDKError: SDKError{
+			Message: "failed to resolve AWS credentials", Cause: err,
+		}}
+	}
+	return awsCredentials{
+		AccessKeyID:    v.AccessKeyID,
+		SecretAccessKey: v.SecretAccessKey,
+		SessionToken:   v.SessionToken,
+	}, nil
+}
+
+// LoadAWSCredentialsProvider loads an aws.CredentialsProvider using the default
+// AWS SDK config chain (env vars, shared config, SSO, IMDS, etc.). If profile
+// is non-empty it is used as the shared config profile. Returns the provider
+// and the resolved region.
+func LoadAWSCredentialsProvider(ctx context.Context, profile string) (aws.CredentialsProvider, string, error) {
+	var optFns []func(*awsconfig.LoadOptions) error
+	if profile != "" {
+		optFns = append(optFns, awsconfig.WithSharedConfigProfile(profile))
+	}
+	cfg, err := awsconfig.LoadDefaultConfig(ctx, optFns...)
+	if err != nil {
+		return nil, "", fmt.Errorf("loading AWS config: %w", err)
+	}
+	return cfg.Credentials, cfg.Region, nil
 }
 
 func (a *AnthropicBedrockAdapter) Name() string { return "anthropic_bedrock" }
@@ -126,6 +175,11 @@ func (a *AnthropicBedrockAdapter) Complete(ctx context.Context, req Request) (*R
 		return nil, err
 	}
 
+	creds, err := a.resolveCredentials(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	endpoint := a.baseURL + "/model/" + req.Model + "/invoke"
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -134,7 +188,7 @@ func (a *AnthropicBedrockAdapter) Complete(ctx context.Context, req Request) (*R
 
 	httpReq.Header.Set("content-type", "application/json")
 	httpReq.Header.Set("accept", "application/json")
-	awsSigV4Sign(httpReq, body, a.creds, a.region, "bedrock", time.Now().UTC())
+	awsSigV4Sign(httpReq, body, creds, a.region, "bedrock", time.Now().UTC())
 
 	resp, err := a.http.Do(httpReq)
 	if err != nil {
@@ -156,6 +210,11 @@ func (a *AnthropicBedrockAdapter) Stream(ctx context.Context, req Request) (<-ch
 		return nil, err
 	}
 
+	creds, err := a.resolveCredentials(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	endpoint := a.baseURL + "/model/" + req.Model + "/invoke-with-response-stream"
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
 	if err != nil {
@@ -163,7 +222,7 @@ func (a *AnthropicBedrockAdapter) Stream(ctx context.Context, req Request) (<-ch
 	}
 
 	httpReq.Header.Set("content-type", "application/json")
-	awsSigV4Sign(httpReq, body, a.creds, a.region, "bedrock", time.Now().UTC())
+	awsSigV4Sign(httpReq, body, creds, a.region, "bedrock", time.Now().UTC())
 
 	resp, err := a.http.Do(httpReq)
 	if err != nil {

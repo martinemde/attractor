@@ -80,12 +80,37 @@ func awsDeriveSigningKey(secret, dateStamp, region, service string) []byte {
 }
 
 // canonicalURIPath returns the URI-encoded path for the canonical request.
+// AWS SigV4 requires each path segment to be percent-encoded using the
+// unreserved character set (A-Z, a-z, 0-9, '-', '.', '_', '~'). Go's
+// EscapedPath does not encode characters like ':' which AWS considers
+// reserved, so we re-encode each segment explicitly.
 func canonicalURIPath(u *url.URL) string {
-	path := u.EscapedPath()
+	path := u.Path
 	if path == "" {
 		return "/"
 	}
-	return path
+	segments := strings.Split(path, "/")
+	for i, seg := range segments {
+		segments[i] = awsURIEncode(seg)
+	}
+	return strings.Join(segments, "/")
+}
+
+// awsURIEncode percent-encodes a string per the AWS SigV4 rules: every byte
+// is encoded except the unreserved set A-Z a-z 0-9 - . _ ~.
+func awsURIEncode(s string) string {
+	var buf strings.Builder
+	buf.Grow(len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+			c == '-' || c == '.' || c == '_' || c == '~' {
+			buf.WriteByte(c)
+		} else {
+			fmt.Fprintf(&buf, "%%%02X", c)
+		}
+	}
+	return buf.String()
 }
 
 // canonicalQueryString returns sorted, encoded query parameters.

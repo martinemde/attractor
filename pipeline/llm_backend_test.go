@@ -12,7 +12,7 @@ import (
 
 func TestLLMBackend_Run_ReturnsResponse(t *testing.T) {
 	backend := &LLMBackend{
-		RunFunc: func(ctx context.Context, prompt string) (string, error) {
+		RunFunc: func(ctx context.Context, prompt string, pctx *Context) (string, error) {
 			return "mock response for: " + prompt, nil
 		},
 	}
@@ -27,7 +27,7 @@ func TestLLMBackend_Run_ReturnsResponse(t *testing.T) {
 
 func TestLLMBackend_Run_ReturnsError(t *testing.T) {
 	backend := &LLMBackend{
-		RunFunc: func(ctx context.Context, prompt string) (string, error) {
+		RunFunc: func(ctx context.Context, prompt string, pctx *Context) (string, error) {
 			return "", errors.New("llm unavailable")
 		},
 	}
@@ -55,7 +55,7 @@ func TestLLMBackend_Run_NilRunFunc(t *testing.T) {
 
 func TestLLMBackend_IntegrationWithCodergenHandler(t *testing.T) {
 	backend := &LLMBackend{
-		RunFunc: func(ctx context.Context, prompt string) (string, error) {
+		RunFunc: func(ctx context.Context, prompt string, pctx *Context) (string, error) {
 			return "implementation complete", nil
 		},
 	}
@@ -77,7 +77,7 @@ func TestLLMBackend_IntegrationWithCodergenHandler(t *testing.T) {
 
 func TestLLMBackend_ErrorBecomesFailOutcome(t *testing.T) {
 	backend := &LLMBackend{
-		RunFunc: func(ctx context.Context, prompt string) (string, error) {
+		RunFunc: func(ctx context.Context, prompt string, pctx *Context) (string, error) {
 			return "", errors.New("rate limited")
 		},
 	}

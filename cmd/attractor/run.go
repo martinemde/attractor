@@ -40,10 +40,20 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	model := viper.GetString("model")
 	provider := viper.GetString("provider")
 	verbose := viper.GetBool("verbose")
+	awsProfile := viper.GetString("aws_profile")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	simple, _ := cmd.Flags().GetBool("simple")
 	workDir, _ := cmd.Flags().GetString("working-dir")
 	goalOverride, _ := cmd.Flags().GetString("goal")
+
+	// When an AWS profile is specified, configure the default LLM client to
+	// use the SDK credential chain so SSO tokens are resolved automatically.
+	if awsProfile != "" {
+		client := unifiedllm.NewClientFromEnvWithOptions(unifiedllm.ClientFromEnvOptions{
+			AWSProfile: awsProfile,
+		})
+		unifiedllm.SetDefaultClient(client)
+	}
 
 	// Resolve working directory to absolute path.
 	absWorkDir, err := filepath.Abs(workDir)
@@ -83,12 +93,16 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		logsDir = filepath.Join("logs", time.Now().Format("20060102-150405"))
 	}
 
+	// Set up event emitter with terminal listener.
+	emitter := pipeline.NewEventEmitter()
+	emitter.On(terminalEventListener(verbose))
+
 	// Create the LLM backend.
 	var backend *pipeline.LLMBackend
 	if simple {
 		backend = &pipeline.LLMBackend{RunFunc: makeSimpleRunFunc(model)}
 	} else {
-		backend = &pipeline.LLMBackend{RunFunc: makeAgentRunFunc(model, provider, absWorkDir)}
+		backend = &pipeline.LLMBackend{RunFunc: makeAgentRunFunc(model, provider, absWorkDir, emitter)}
 	}
 
 	// Build the registry with a real backend.
@@ -97,10 +111,6 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 	codergenHandler := pipeline.NewCodergenHandler(backend)
 	registry.Register("codergen", codergenHandler)
 	registry.SetDefaultHandler(codergenHandler)
-
-	// Set up event emitter with terminal listener.
-	emitter := pipeline.NewEventEmitter()
-	emitter.On(terminalEventListener(verbose))
 
 	config := &pipeline.RunConfig{
 		LogsRoot:     logsDir,
@@ -127,16 +137,57 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 }
 
 // makeAgentRunFunc creates a RunFunc that uses a full agentloop session with tools.
-func makeAgentRunFunc(model, provider, workDir string) func(context.Context, string) (string, error) {
-	return func(ctx context.Context, prompt string) (string, error) {
+// It prepends prior stage output as conversation history for continuity and
+// wires session events to the pipeline emitter for observability.
+func makeAgentRunFunc(model, provider, workDir string, emitter *pipeline.EventEmitter) func(context.Context, string, *pipeline.Context) (string, error) {
+	return func(ctx context.Context, prompt string, pctx *pipeline.Context) (string, error) {
 		profile := selectProfile(model, provider)
 		env := agentloop.NewLocalExecutionEnvironment(workDir)
 		session := agentloop.NewSession(profile, env, nil)
 		defer session.Close()
 
+		// Prepend prior stage output as conversation history for continuity.
+		// This lets the model know what happened in previous pipeline stages.
+		if pctx != nil {
+			if lastResponse, ok := pctx.Get("last_response"); ok {
+				if respStr, ok := lastResponse.(string); ok && respStr != "" {
+					// Create a user/assistant turn pair representing the prior stage.
+					priorTurns := []agentloop.Turn{
+						agentloop.NewUserTurn("[Prior stage context]"),
+						agentloop.NewAssistantTurn(respStr, nil, "", unifiedllm.Usage{}, ""),
+					}
+					session.PrependHistory(priorTurns)
+				}
+			}
+		}
+
+		// Wire session events to pipeline emitter for observability.
+		// Run in a goroutine so we don't block the main loop.
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for event := range session.Events() {
+				if emitter == nil {
+					continue
+				}
+				// Forward agent loop events to pipeline emitter.
+				emitter.Emit(pipeline.Event{
+					Type:      pipeline.EventType("agent_" + string(event.Kind)),
+					Timestamp: event.Timestamp,
+					Data: map[string]any{
+						"session_id": event.SessionID,
+						"data":       event.Data,
+					},
+				})
+			}
+		}()
+
 		if err := session.Submit(ctx, prompt); err != nil {
 			return "", err
 		}
+
+		// Wait for event forwarding to complete.
+		<-done
 
 		// Extract the last assistant text from history.
 		history := session.History()
@@ -151,8 +202,8 @@ func makeAgentRunFunc(model, provider, workDir string) func(context.Context, str
 }
 
 // makeSimpleRunFunc creates a RunFunc that uses a single LLM completion (no tools).
-func makeSimpleRunFunc(model string) func(context.Context, string) (string, error) {
-	return func(ctx context.Context, prompt string) (string, error) {
+func makeSimpleRunFunc(model string) func(context.Context, string, *pipeline.Context) (string, error) {
+	return func(ctx context.Context, prompt string, _ *pipeline.Context) (string, error) {
 		client := unifiedllm.GetDefaultClient()
 		resp, err := client.Complete(ctx, unifiedllm.Request{
 			Model:    model,

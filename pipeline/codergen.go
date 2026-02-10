@@ -35,7 +35,7 @@ func NewCodergenHandler(backend CodergenBackend) *CodergenHandler {
 // Execute runs the codergen handler for the given node.
 func (h *CodergenHandler) Execute(node *dotparser.Node, ctx *Context, graph *dotparser.Graph, logsRoot string) (*Outcome, error) {
 	// 1. Build prompt: use node's prompt attr, fall back to label, fall back to node ID
-	prompt := h.buildPrompt(node, graph)
+	prompt := h.buildPrompt(node, graph, ctx)
 
 	// 2. Create stage directory and write prompt
 	if logsRoot != "" {
@@ -83,13 +83,25 @@ func (h *CodergenHandler) Execute(node *dotparser.Node, ctx *Context, graph *dot
 		}
 	}
 
-	// 5. Build outcome with context updates
+	// 5. Check for refusal patterns in response
+	if isRefusalResponse(responseText) {
+		outcome := Fail("LLM response indicates refusal or inability to complete task").
+			WithContextUpdate("last_stage", node.ID).
+			WithContextUpdate("last_response", responseText)
+
+		if logsRoot != "" {
+			h.writeStatus(logsRoot, node.ID, outcome)
+		}
+		return outcome, nil
+	}
+
+	// 6. Build outcome with context updates
 	outcome := Success().
 		WithNotes(fmt.Sprintf("Stage completed: %s", node.ID)).
 		WithContextUpdate("last_stage", node.ID).
-		WithContextUpdate("last_response", truncateString(responseText, 200))
+		WithContextUpdate("last_response", responseText)
 
-	// 6. Write status to logs
+	// 7. Write status to logs
 	if logsRoot != "" {
 		h.writeStatus(logsRoot, node.ID, outcome)
 	}
@@ -97,8 +109,34 @@ func (h *CodergenHandler) Execute(node *dotparser.Node, ctx *Context, graph *dot
 	return outcome, nil
 }
 
+// isRefusalResponse detects refusal patterns in LLM responses that indicate
+// the model couldn't or wouldn't complete the task.
+func isRefusalResponse(response string) bool {
+	lowerResponse := strings.ToLower(response)
+	refusalPatterns := []string{
+		"i can't",
+		"i cannot",
+		"i don't have access",
+		"i'm unable to",
+		"i am unable to",
+		"please provide",
+		"please paste",
+		"i don't have the ability",
+		"i'm not able to",
+		"i am not able to",
+	}
+	for _, pattern := range refusalPatterns {
+		if strings.Contains(lowerResponse, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
 // buildPrompt constructs the prompt from node attributes with variable expansion.
-func (h *CodergenHandler) buildPrompt(node *dotparser.Node, graph *dotparser.Graph) string {
+// It expands both graph-level attributes (like $goal) and context variables
+// (like $last_response, $last_stage) to allow stages to reference prior output.
+func (h *CodergenHandler) buildPrompt(node *dotparser.Node, graph *dotparser.Graph, ctx *Context) string {
 	// Priority: prompt attr > label attr > node ID
 	var prompt string
 
@@ -110,9 +148,19 @@ func (h *CodergenHandler) buildPrompt(node *dotparser.Node, graph *dotparser.Gra
 		prompt = node.ID
 	}
 
-	// Expand $goal variable
+	// Expand $goal variable from graph attributes
 	if goalAttr, ok := graph.GraphAttr("goal"); ok {
 		prompt = strings.ReplaceAll(prompt, "$goal", goalAttr.Str)
+	}
+
+	// Expand all context variables (e.g., $last_response, $last_stage)
+	// This allows stages to reference output from prior stages.
+	if ctx != nil {
+		snapshot := ctx.Snapshot()
+		for key, value := range snapshot {
+			varName := "$" + key
+			prompt = strings.ReplaceAll(prompt, varName, toString(value))
+		}
 	}
 
 	return prompt
@@ -148,15 +196,4 @@ func (h *CodergenHandler) writeStatus(logsRoot, nodeID string, outcome *Outcome)
 	}
 
 	return os.WriteFile(statusFile, data, 0o644)
-}
-
-// truncateString truncates a string to maxLen characters with "..." suffix if needed.
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	if maxLen <= 3 {
-		return s[:maxLen]
-	}
-	return s[:maxLen-3] + "..."
 }

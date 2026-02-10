@@ -1,0 +1,14 @@
+digraph Smoke {
+    graph [goal="Verify the pipeline runner works end to end"]
+    node [shape=box]
+
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare, label="Exit"]
+
+    echo [
+        label="Echo",
+        prompt="Respond with exactly: SMOKE_TEST_OK"
+    ]
+
+    start -> echo -> exit
+}

@@ -218,9 +218,23 @@ func GetDefaultClient() *Client {
 	return defaultClient
 }
 
+// ClientFromEnvOptions configures NewClientFromEnvWithOptions.
+type ClientFromEnvOptions struct {
+	// AWSProfile is the shared config profile name passed to the AWS SDK
+	// credential chain (e.g. an SSO profile). When empty the default chain
+	// is used without an explicit profile.
+	AWSProfile string
+}
+
 // NewClientFromEnv creates a Client by scanning environment variables for API keys
 // and creating native provider adapters for each detected provider.
 func NewClientFromEnv() *Client {
+	return NewClientFromEnvWithOptions(ClientFromEnvOptions{})
+}
+
+// NewClientFromEnvWithOptions creates a Client using the standard environment
+// variable scan, with additional options for provider configuration.
+func NewClientFromEnvWithOptions(opts ClientFromEnvOptions) *Client {
 	c := NewClient()
 
 	// Register native adapters based on available environment variables.
@@ -233,7 +247,20 @@ func NewClientFromEnv() *Client {
 	if adapter, err := NewGeminiAdapter(""); err == nil {
 		c.RegisterProvider("gemini", adapter)
 	}
-	if adapter, err := NewAnthropicBedrockAdapter(); err == nil {
+
+	// Bedrock: prefer the SDK credential chain when a profile is given (or
+	// when static env vars are missing), falling back to static creds.
+	var bedrockOpts []AnthropicBedrockAdapterOption
+	if opts.AWSProfile != "" {
+		provider, region, err := LoadAWSCredentialsProvider(context.Background(), opts.AWSProfile)
+		if err == nil {
+			bedrockOpts = append(bedrockOpts, WithBedrockCredentialsProvider(provider))
+			if region != "" {
+				bedrockOpts = append(bedrockOpts, WithBedrockRegion(region))
+			}
+		}
+	}
+	if adapter, err := NewAnthropicBedrockAdapter(bedrockOpts...); err == nil {
 		c.RegisterProvider("anthropic_bedrock", adapter)
 	}
 

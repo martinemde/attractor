@@ -1,0 +1,36 @@
+digraph SpecConformance {
+    graph [
+        goal="Report on spec conformance between coding-agent-loop-spec.md and the agentloop implementation"
+    ]
+    node [shape=box, timeout=900s]
+
+    start  [shape=Mdiamond, label="Start"]
+    exit   [shape=Msquare, label="Exit"]
+
+    read_spec [
+        label="Read Spec",
+        prompt="Read coding-agent-loop-spec.md thoroughly.
+Summarize every requirement, behavior, and constraint it defines."
+    ]
+
+    read_impl [
+        label="Read Implementation",
+        prompt="Read the agentloop package source code.
+For each requirement identified in the spec, note whether the implementation
+satisfies it, partially satisfies it, or does not address it."
+    ]
+
+    report [
+        label="Report",
+        prompt="Produce a structured conformance report.
+For each spec requirement, state:
+  - The requirement (with spec reference)
+  - Whether the code conforms, partially conforms, or diverges
+  - A brief explanation of the difference
+  - Your assessment of whether the spec or the code appears correct
+List any behavior in the code that has no corresponding spec entry.
+List any spec requirements that have no corresponding implementation."
+    ]
+
+    start -> read_spec -> read_impl -> report -> exit
+}
