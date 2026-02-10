@@ -73,10 +73,16 @@ func (r *HandlerRegistry) Resolve(node *dotparser.Node) Handler {
 }
 
 // DefaultRegistry creates a HandlerRegistry with the standard handlers registered.
-// This includes start and exit handlers.
+// This includes start, exit, and codergen handlers.
 func DefaultRegistry() *HandlerRegistry {
 	r := NewHandlerRegistry()
 	r.Register("start", &StartHandler{})
 	r.Register("exit", &ExitHandler{})
+
+	// Register codergen handler for shape=box and as the default fallback
+	codergenHandler := NewCodergenHandler(nil) // simulation mode
+	r.Register("codergen", codergenHandler)
+	r.SetDefaultHandler(codergenHandler)
+
 	return r
 }

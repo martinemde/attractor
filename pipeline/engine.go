@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/martinemde/attractor/dotparser"
 )
@@ -22,6 +23,10 @@ type RunConfig struct {
 	// Interviewer is the human interaction interface for wait.human nodes.
 	// If nil, human gates will fail.
 	Interviewer Interviewer
+
+	// Transforms is a list of transforms to apply to the graph before execution.
+	// Transforms are applied in order before any validation or execution.
+	Transforms []Transform
 }
 
 // RunResult contains the results of a pipeline execution.
@@ -86,11 +91,24 @@ func Run(graph *dotparser.Graph, config *RunConfig) (*RunResult, error) {
 		registry = DefaultRegistry()
 	}
 
+	// Apply transforms before execution
+	if len(config.Transforms) > 0 {
+		graph = ApplyTransforms(graph, config.Transforms)
+	}
+
 	ctx := NewContext()
 	mirrorGraphAttributes(graph, ctx)
 
 	completedNodes := []string{}
 	nodeOutcomes := make(map[string]*Outcome)
+
+	// Write manifest.json at run initialization
+	startTime := time.Now()
+	if config.LogsRoot != "" {
+		if err := writeManifest(config.LogsRoot, graph, startTime); err != nil {
+			ctx.AppendLog(fmt.Sprintf("failed to write manifest: %v", err))
+		}
+	}
 
 	// Find start node
 	currentNode := findStartNode(graph)
@@ -259,6 +277,35 @@ func writeNodeStatus(logsRoot, nodeID string, outcome *Outcome) error {
 
 	if err := os.WriteFile(statusFile, data, 0o644); err != nil {
 		return fmt.Errorf("failed to write status file: %w", err)
+	}
+
+	return nil
+}
+
+// writeManifest writes the manifest.json file with pipeline metadata.
+func writeManifest(logsRoot string, graph *dotparser.Graph, startTime time.Time) error {
+	if err := os.MkdirAll(logsRoot, 0o755); err != nil {
+		return fmt.Errorf("failed to create logs directory: %w", err)
+	}
+
+	manifest := map[string]any{
+		"name":       graph.Name,
+		"start_time": startTime.Format(time.RFC3339),
+	}
+
+	// Include goal if present
+	if goalAttr, ok := graph.GraphAttr("goal"); ok {
+		manifest["goal"] = goalAttr.Str
+	}
+
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal manifest: %w", err)
+	}
+
+	manifestFile := filepath.Join(logsRoot, "manifest.json")
+	if err := os.WriteFile(manifestFile, data, 0o644); err != nil {
+		return fmt.Errorf("failed to write manifest file: %w", err)
 	}
 
 	return nil
