@@ -94,5 +94,8 @@ func DefaultRegistryWithInterviewer(interviewer Interviewer) *HandlerRegistry {
 	// Register wait.human handler for shape=hexagon
 	r.Register("wait.human", NewWaitForHumanHandler(interviewer))
 
+	// Register conditional handler for shape=diamond
+	r.Register("conditional", &ConditionalHandler{})
+
 	return r
 }
