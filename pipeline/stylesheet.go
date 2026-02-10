@@ -340,8 +340,7 @@ func nodeHasClass(node *dotparser.Node, className string) bool {
 	}
 
 	// Classes are comma-separated
-	classes := strings.Split(classAttr.Str, ",")
-	for _, c := range classes {
+	for c := range strings.SplitSeq(classAttr.Str, ",") {
 		if strings.TrimSpace(c) == className {
 			return true
 		}
