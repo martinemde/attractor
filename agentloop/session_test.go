@@ -22,6 +22,7 @@ type mockAdapter struct {
 	responses []*unifiedllm.Response
 	callCount int
 	mu        sync.Mutex
+	onCall    func(int) // optional callback invoked with call number after each Complete
 }
 
 func (m *mockAdapter) Name() string { return m.name }
@@ -29,11 +30,17 @@ func (m *mockAdapter) Name() string { return m.name }
 func (m *mockAdapter) Complete(ctx context.Context, req unifiedllm.Request) (*unifiedllm.Response, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if m.callCount >= len(m.responses) {
 		return nil, fmt.Errorf("no more mock responses (call #%d)", m.callCount)
 	}
 	resp := m.responses[m.callCount]
 	m.callCount++
+	if m.onCall != nil {
+		m.onCall(m.callCount)
+	}
 	return resp, nil
 }
 
@@ -361,6 +368,9 @@ func TestSessionAbort(t *testing.T) {
 // TestSessionContextCancellation verifies that context cancellation
 // stops the session (spec Section 2.3, any -> CLOSED).
 func TestSessionContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	responses := make([]*unifiedllm.Response, 100)
 	for i := range responses {
 		responses[i] = makeToolCallResponse(struct{ id, name, args string }{
@@ -368,15 +378,21 @@ func TestSessionContextCancellation(t *testing.T) {
 		})
 	}
 
-	adapter := &mockAdapter{name: "anthropic", responses: responses}
+	adapter := &mockAdapter{
+		name:      "anthropic",
+		responses: responses,
+		onCall: func(callNum int) {
+			// Cancel context after the 3rd call, deterministically.
+			if callNum == 3 {
+				cancel()
+			}
+		},
+	}
 	env := newMockExecEnv("/tmp/test")
 	s := newTestSession(adapter, env, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
 	err := s.Submit(ctx, "run forever")
-	assert.Error(t, err) // Should get context error.
+	assert.Error(t, err)
 	assert.Equal(t, StateClosed, s.State())
 }
 
