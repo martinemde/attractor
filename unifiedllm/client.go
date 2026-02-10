@@ -219,17 +219,19 @@ func GetDefaultClient() *Client {
 }
 
 // NewClientFromEnv creates a Client by scanning environment variables for API keys
-// and creating GollmAdapters for each detected provider.
+// and creating native provider adapters for each detected provider.
 func NewClientFromEnv() *Client {
 	c := NewClient()
 
-	// Register providers based on available environment variables.
-	// The GollmAdapter handles provider-specific env var lookup internally.
-	for _, provider := range []string{"openai", "anthropic"} {
-		adapter, err := NewGollmAdapter(provider, "")
-		if err == nil {
-			c.RegisterProvider(provider, adapter)
-		}
+	// Register native adapters based on available environment variables.
+	if adapter, err := NewOpenAIAdapter(""); err == nil {
+		c.RegisterProvider("openai", adapter)
+	}
+	if adapter, err := NewAnthropicAdapter(""); err == nil {
+		c.RegisterProvider("anthropic", adapter)
+	}
+	if adapter, err := NewGeminiAdapter(""); err == nil {
+		c.RegisterProvider("gemini", adapter)
 	}
 
 	return c
