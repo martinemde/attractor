@@ -432,7 +432,7 @@ func TestServer_MultiplePipelines(t *testing.T) {
 
 	// Create multiple pipelines
 	var ids []string
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		reqBody := `{"dot_source": "digraph { start -> exit }"}`
 		req := httptest.NewRequest("POST", "/pipelines", strings.NewReader(reqBody))
 		req.Header.Set("Content-Type", "application/json")
