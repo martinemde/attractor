@@ -182,9 +182,7 @@ func (h *ParallelHandler) Execute(node *dotparser.Node, ctx *Context, graph *dot
 
 	case "quorum":
 		required := int(float64(totalBranches) * quorumFraction)
-		if required < 1 {
-			required = 1
-		}
+		required = max(required, 1)
 		if successCount >= required {
 			return Success().WithNotes(fmt.Sprintf("%d/%d branches succeeded (quorum: %.0f%%)", successCount, totalBranches, quorumFraction*100)), nil
 		}
@@ -201,7 +199,7 @@ func (h *ParallelHandler) Execute(node *dotparser.Node, ctx *Context, graph *dot
 
 // executeBranchNode executes a single branch target node.
 // This is a simplified execution that runs just the target node's handler.
-func executeBranchNode(node *dotparser.Node, ctx *Context, graph *dotparser.Graph, logsRoot string) *Outcome {
+func executeBranchNode(node *dotparser.Node, _ *Context, _ *dotparser.Graph, _ string) *Outcome {
 	// Get handler for the node by resolving its type
 	// Since we don't have direct access to the registry here, we use a simple approach:
 	// Check node attributes to determine handler type

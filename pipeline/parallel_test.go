@@ -2,7 +2,6 @@ package pipeline
 
 import (
 	"encoding/json"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -393,11 +392,6 @@ func TestParallelHandler_ResultsStoredInContext(t *testing.T) {
 
 func TestParallelHandler_BoundedParallelism(t *testing.T) {
 	// Test that max_parallel limits concurrent execution
-	var maxConcurrent int32
-	var currentConcurrent int32
-	var mu sync.Mutex
-
-	// We'll use a custom graph where we can track concurrency
 	parallelNode := newNode("parallel",
 		strAttr("shape", "component"),
 		intAttr("max_parallel", 2), // Only allow 2 concurrent
@@ -406,7 +400,7 @@ func TestParallelHandler_BoundedParallelism(t *testing.T) {
 	// Create 4 branches
 	branches := make([]*dotparser.Node, 4)
 	edges := make([]*dotparser.Edge, 4)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		branches[i] = newNode("branch"+string(rune('A'+i)), strAttr("test_outcome", "success"))
 		edges[i] = newEdge("parallel", branches[i].ID)
 	}
@@ -433,11 +427,6 @@ func TestParallelHandler_BoundedParallelism(t *testing.T) {
 	results, _ := DeserializeBranchResults(resultsRaw.(string))
 	assert.Len(t, results, 4)
 
-	// Note: Actual concurrency verification is tricky in tests
-	// The semaphore implementation should enforce the limit
-	_ = maxConcurrent
-	_ = currentConcurrent
-	_ = mu
 }
 
 func TestParallelHandler_NoOutgoingEdges(t *testing.T) {
@@ -657,7 +646,7 @@ func TestParallelHandler_ConcurrentExecution(t *testing.T) {
 	// Create several branches
 	nodes := []*dotparser.Node{parallelNode}
 	edges := []*dotparser.Edge{}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		branchNode := newNode("branch"+string(rune('A'+i)), strAttr("test_outcome", "success"))
 		nodes = append(nodes, branchNode)
 		edges = append(edges, newEdge("parallel", branchNode.ID))
