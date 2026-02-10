@@ -233,6 +233,9 @@ func NewClientFromEnv() *Client {
 	if adapter, err := NewGeminiAdapter(""); err == nil {
 		c.RegisterProvider("gemini", adapter)
 	}
+	if adapter, err := NewAnthropicBedrockAdapter(); err == nil {
+		c.RegisterProvider("anthropic_bedrock", adapter)
+	}
 
 	return c
 }

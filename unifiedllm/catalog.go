@@ -74,6 +74,22 @@ var Models = []ModelInfo{
 		InputCostPerMillion: floatPtr(0.15), OutputCostPerMillion: floatPtr(0.60),
 		Aliases: []string{"gemini-flash", "gemini-3-flash"},
 	},
+
+	// Anthropic on Bedrock
+	{
+		ID: "anthropic.claude-opus-4-6-v1:0", Provider: "anthropic_bedrock",
+		DisplayName: "Claude Opus 4.6 (Bedrock)",
+		ContextWindow: 200000, MaxOutput: intPtr(32768),
+		SupportsTools: true, SupportsVision: true, SupportsReasoning: true,
+		Aliases: []string{"us.anthropic.claude-opus-4-6-v1:0"},
+	},
+	{
+		ID: "anthropic.claude-sonnet-4-5-v1:0", Provider: "anthropic_bedrock",
+		DisplayName: "Claude Sonnet 4.5 (Bedrock)",
+		ContextWindow: 200000, MaxOutput: intPtr(16384),
+		SupportsTools: true, SupportsVision: true, SupportsReasoning: true,
+		Aliases: []string{"us.anthropic.claude-sonnet-4-5-v1:0"},
+	},
 }
 
 // GetModelInfo returns the catalog entry for a model, or nil if unknown.
