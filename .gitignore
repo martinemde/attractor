@@ -1,0 +1,27 @@
+# Binary
+attractor
+
+# Test binary
+*.test
+
+# Output of go coverage
+*.out
+*.prof
+
+# Dependency directories
+vendor/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
