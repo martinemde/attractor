@@ -330,8 +330,8 @@ func TestRun_FailedNodeWithNoEdges(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed with no outgoing fail edge")
 }
 
-func TestRun_FailedNodeWithUnconditionalEdgeContinues(t *testing.T) {
-	// When a node fails but has an unconditional edge, it follows that edge
+func TestRun_FailedNodeWithFailEdgeContinues(t *testing.T) {
+	// When a node fails and has a fail edge (condition="outcome=fail"), follow it
 	mockHandler := &MockHandler{
 		Outcomes: []*Outcome{
 			Fail("something went wrong"),
@@ -349,17 +349,48 @@ func TestRun_FailedNodeWithUnconditionalEdgeContinues(t *testing.T) {
 		},
 		[]*dotparser.Edge{
 			newEdge("start", "A"),
-			newEdge("A", "exit"), // Unconditional edge - will be followed even on fail
+			newEdge("A", "exit", strAttr("condition", "outcome=fail")), // Fail edge
 		},
 		nil,
 	)
 
 	result, err := Run(graph, &RunConfig{Registry: registry})
 
-	// No error - the unconditional edge is followed
+	// No error - the fail edge is followed
 	require.NoError(t, err)
 	assert.Equal(t, []string{"start", "A"}, result.CompletedNodes)
 	assert.Equal(t, StatusFail, result.FinalOutcome.Status)
+}
+
+func TestRun_FailedNodeWithNoFailEdgeNoRetryTargetErrors(t *testing.T) {
+	// When a node fails with no fail edge and no retry_target, pipeline errors
+	mockHandler := &MockHandler{
+		Outcomes: []*Outcome{
+			Fail("something went wrong"),
+		},
+	}
+
+	registry := DefaultRegistry()
+	registry.Register("mock", mockHandler)
+
+	graph := newTestGraph(
+		[]*dotparser.Node{
+			newNode("start", strAttr("shape", "Mdiamond")),
+			newNode("A", strAttr("type", "mock")),
+			newNode("exit", strAttr("shape", "Msquare")),
+		},
+		[]*dotparser.Edge{
+			newEdge("start", "A"),
+			newEdge("A", "exit"), // Unconditional edge - NOT followed on FAIL per Section 3.7
+		},
+		nil,
+	)
+
+	_, err := Run(graph, &RunConfig{Registry: registry})
+
+	// Error because no fail edge and no retry_target
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed with no outgoing fail edge")
 }
 
 // HandlerFunc is an adapter to use a function as a Handler

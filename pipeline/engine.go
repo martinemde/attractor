@@ -27,6 +27,10 @@ type RunConfig struct {
 	// Transforms is a list of transforms to apply to the graph before execution.
 	// Transforms are applied in order before any validation or execution.
 	Transforms []Transform
+
+	// Sleeper is used for delays during retries. If nil, DefaultSleeper is used.
+	// This allows tests to inject a mock sleeper to avoid actual delays.
+	Sleeper Sleeper
 }
 
 // RunResult contains the results of a pipeline execution.
@@ -91,6 +95,11 @@ func Run(graph *dotparser.Graph, config *RunConfig) (*RunResult, error) {
 		registry = DefaultRegistry()
 	}
 
+	sleeper := config.Sleeper
+	if sleeper == nil {
+		sleeper = DefaultSleeper
+	}
+
 	// Apply transforms before execution
 	if len(config.Transforms) > 0 {
 		graph = ApplyTransforms(graph, config.Transforms)
@@ -119,28 +128,40 @@ func Run(graph *dotparser.Graph, config *RunConfig) (*RunResult, error) {
 	var lastOutcome *Outcome
 
 	for {
-		// Step 1: Check for terminal node
+		// Step 1: Check for terminal node with goal gate enforcement
 		if isTerminal(currentNode) {
+			gateOK, failedGate := checkGoalGates(graph, nodeOutcomes)
+			if !gateOK && failedGate != nil {
+				// Goal gate unsatisfied, try to find retry target
+				retryTarget := getRetryTarget(failedGate, graph)
+				if retryTarget != "" {
+					nextNode := graph.NodeByID(retryTarget)
+					if nextNode != nil {
+						currentNode = nextNode
+						continue
+					}
+				}
+				return nil, fmt.Errorf("goal gate %q unsatisfied and no retry target available", failedGate.ID)
+			}
 			break
 		}
 
-		// Step 2: Execute node handler
+		// Step 2: Resolve handler
 		handler := registry.Resolve(currentNode)
 		if handler == nil {
 			return nil, fmt.Errorf("no handler found for node %q", currentNode.ID)
 		}
 
-		outcome, err := handler.Execute(currentNode, ctx, graph, config.LogsRoot)
-		if err != nil {
-			return nil, fmt.Errorf("handler execution failed for node %q: %w", currentNode.ID, err)
-		}
+		// Step 3: Execute node handler with retry policy
+		retryPolicy := BuildRetryPolicy(currentNode, graph)
+		outcome := executeWithRetry(handler, currentNode, ctx, graph, config.LogsRoot, retryPolicy, sleeper)
 
-		// Step 3: Record completion
+		// Step 4: Record completion
 		completedNodes = append(completedNodes, currentNode.ID)
 		nodeOutcomes[currentNode.ID] = outcome
 		lastOutcome = outcome
 
-		// Step 4: Apply context updates from outcome
+		// Step 5: Apply context updates from outcome
 		if outcome.ContextUpdates != nil {
 			ctx.ApplyUpdates(outcome.ContextUpdates)
 		}
@@ -149,7 +170,7 @@ func Run(graph *dotparser.Graph, config *RunConfig) (*RunResult, error) {
 			ctx.Set("preferred_label", outcome.PreferredLabel)
 		}
 
-		// Step 5: Write status.json
+		// Step 6: Write status.json
 		if config.LogsRoot != "" {
 			if err := writeNodeStatus(config.LogsRoot, currentNode.ID, outcome); err != nil {
 				// Log error but don't fail the pipeline
@@ -157,17 +178,17 @@ func Run(graph *dotparser.Graph, config *RunConfig) (*RunResult, error) {
 			}
 		}
 
-		// Step 6: Select next edge
-		nextEdge := SelectEdge(currentNode, outcome, ctx, graph)
+		// Step 7: Select next edge with failure routing
+		nextEdge := selectNextEdgeWithFailureRouting(currentNode, outcome, ctx, graph)
 		if nextEdge == nil {
 			if outcome.Status == StatusFail {
-				return nil, fmt.Errorf("stage %q failed with no outgoing fail edge", currentNode.ID)
+				return nil, fmt.Errorf("stage %q failed with no outgoing fail edge and no retry target", currentNode.ID)
 			}
 			// No edge found, but not a failure - break naturally
 			break
 		}
 
-		// Step 7: Advance to next node
+		// Step 8: Advance to next node
 		nextNode := graph.NodeByID(nextEdge.To)
 		if nextNode == nil {
 			return nil, fmt.Errorf("edge target node %q not found", nextEdge.To)
@@ -181,6 +202,179 @@ func Run(graph *dotparser.Graph, config *RunConfig) (*RunResult, error) {
 		Context:        ctx,
 		NodeOutcomes:   nodeOutcomes,
 	}, nil
+}
+
+// executeWithRetry executes a handler with retry logic.
+// It handles RETRY outcomes and handler errors according to the retry policy.
+func executeWithRetry(
+	handler Handler,
+	node *dotparser.Node,
+	ctx *Context,
+	graph *dotparser.Graph,
+	logsRoot string,
+	policy *RetryPolicy,
+	sleeper Sleeper,
+) *Outcome {
+	maxAttempts := policy.MaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		// Execute the handler
+		outcome, err := handler.Execute(node, ctx, graph, logsRoot)
+
+		// Handle execution errors
+		if err != nil {
+			if policy.ShouldRetry != nil && !policy.ShouldRetry(err) {
+				// Error is not retryable
+				return Fail(err.Error())
+			}
+			if attempt < maxAttempts {
+				// Retryable error, try again after delay
+				IncrementRetryCount(ctx, node.ID)
+				delay := policy.Backoff.DelayForAttempt(attempt)
+				sleeper.Sleep(delay)
+				continue
+			}
+			// Out of retries
+			return Fail(fmt.Sprintf("max retries exceeded: %v", err))
+		}
+
+		// Handle outcome-based routing
+		switch outcome.Status {
+		case StatusSuccess, StatusPartialSuccess:
+			// Success - reset retry counter and return
+			ResetRetryCount(ctx, node.ID)
+			return outcome
+
+		case StatusRetry:
+			if attempt < maxAttempts {
+				// Handler requested retry
+				IncrementRetryCount(ctx, node.ID)
+				delay := policy.Backoff.DelayForAttempt(attempt)
+				sleeper.Sleep(delay)
+				continue
+			}
+			// Out of retries
+			if allowPartial, ok := node.Attr("allow_partial"); ok && allowPartial.Bool {
+				return PartialSuccess("retries exhausted, partial accepted")
+			}
+			return Fail("max retries exceeded")
+
+		case StatusFail:
+			// Immediate failure, no retries for explicit FAIL
+			return outcome
+
+		default:
+			// Unknown status, treat as success
+			return outcome
+		}
+	}
+
+	// Should not reach here, but return failure as fallback
+	return Fail("max retries exceeded")
+}
+
+// selectNextEdgeWithFailureRouting selects the next edge using edge selection
+// with special handling for FAIL outcomes per Section 3.7.
+//
+// For FAIL outcomes, the routing order is:
+// 1. Fail edge (condition="outcome=fail")
+// 2. retry_target attribute on node
+// 3. fallback_retry_target attribute on node
+// 4. Graph-level retry_target / fallback_retry_target
+// 5. Pipeline termination (returns nil)
+//
+// For non-FAIL outcomes, standard edge selection is used which includes
+// condition matching, preferred label, suggested next IDs, and weight-based
+// selection of unconditional edges.
+func selectNextEdgeWithFailureRouting(node *dotparser.Node, outcome *Outcome, ctx *Context, graph *dotparser.Graph) *dotparser.Edge {
+	// For FAIL outcomes, use failure routing order (Section 3.7)
+	if outcome.Status == StatusFail {
+		edges := graph.EdgesFrom(node.ID)
+
+		// Step 1: Look for fail edge (condition that matches FAIL outcome)
+		for _, e := range edges {
+			if cond, ok := e.Attr("condition"); ok && cond.Str != "" {
+				if EvaluateCondition(cond.Str, outcome, nil) {
+					return e
+				}
+			}
+		}
+
+		// Steps 2-4: Check retry targets (node and graph level)
+		retryTarget := getRetryTarget(node, graph)
+		if retryTarget != "" {
+			targetNode := graph.NodeByID(retryTarget)
+			if targetNode != nil {
+				// Create a synthetic edge to the retry target
+				return &dotparser.Edge{
+					From: node.ID,
+					To:   retryTarget,
+				}
+			}
+		}
+
+		// Step 5: No failure route found - return nil for termination
+		return nil
+	}
+
+	// For non-FAIL outcomes, use standard edge selection
+	return SelectEdge(node, outcome, ctx, graph)
+}
+
+// checkGoalGates checks if all goal gates in the visited nodes are satisfied.
+// Returns (true, nil) if all gates are satisfied or no goal gates exist.
+// Returns (false, failedNode) if a goal gate has a non-success outcome.
+func checkGoalGates(graph *dotparser.Graph, nodeOutcomes map[string]*Outcome) (bool, *dotparser.Node) {
+	for nodeID, outcome := range nodeOutcomes {
+		node := graph.NodeByID(nodeID)
+		if node == nil {
+			continue
+		}
+
+		// Check if this node is a goal gate
+		if goalGateAttr, ok := node.Attr("goal_gate"); ok && goalGateAttr.Bool {
+			// Goal gate must have a success outcome
+			if outcome.Status != StatusSuccess && outcome.Status != StatusPartialSuccess {
+				return false, node
+			}
+		}
+	}
+	return true, nil
+}
+
+// getRetryTarget returns the retry target for a node.
+// Resolution order:
+//  1. Node attribute `retry_target`
+//  2. Node attribute `fallback_retry_target`
+//  3. Graph attribute `retry_target`
+//  4. Graph attribute `fallback_retry_target`
+func getRetryTarget(node *dotparser.Node, graph *dotparser.Graph) string {
+	// Check node-level retry_target
+	if rt, ok := node.Attr("retry_target"); ok && rt.Str != "" {
+		return rt.Str
+	}
+
+	// Check node-level fallback_retry_target
+	if frt, ok := node.Attr("fallback_retry_target"); ok && frt.Str != "" {
+		return frt.Str
+	}
+
+	// Check graph-level retry_target
+	if graph != nil {
+		if rt, ok := graph.GraphAttr("retry_target"); ok && rt.Str != "" {
+			return rt.Str
+		}
+
+		// Check graph-level fallback_retry_target
+		if frt, ok := graph.GraphAttr("fallback_retry_target"); ok && frt.Str != "" {
+			return frt.Str
+		}
+	}
+
+	return ""
 }
 
 // findStartNode locates the pipeline entry point.
