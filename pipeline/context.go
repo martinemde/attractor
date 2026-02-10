@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"maps"
 	"sync"
 )
 
@@ -71,9 +72,7 @@ func (c *Context) Snapshot() map[string]any {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	result := make(map[string]any, len(c.values))
-	for k, v := range c.values {
-		result[k] = v
-	}
+	maps.Copy(result, c.values)
 	return result
 }
 
@@ -86,9 +85,7 @@ func (c *Context) Clone() *Context {
 		values: make(map[string]any, len(c.values)),
 		logs:   make([]string, len(c.logs)),
 	}
-	for k, v := range c.values {
-		newCtx.values[k] = v
-	}
+	maps.Copy(newCtx.values, c.values)
 	copy(newCtx.logs, c.logs)
 	return newCtx
 }
@@ -100,9 +97,7 @@ func (c *Context) ApplyUpdates(updates map[string]any) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	for k, v := range updates {
-		c.values[k] = v
-	}
+	maps.Copy(c.values, updates)
 }
 
 // toString converts any value to its string representation.

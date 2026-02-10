@@ -184,66 +184,66 @@ func TestContextThreadSafety(t *testing.T) {
 	numOps := 100
 
 	// Concurrent writes
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < numOps; j++ {
+			for j := range numOps {
 				ctx.Set("key", id*numOps+j)
 			}
 		}(i)
 	}
 
 	// Concurrent reads
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < numOps; j++ {
+			for range numOps {
 				ctx.Get("key")
 			}
 		}()
 	}
 
 	// Concurrent GetString
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < numOps; j++ {
+			for range numOps {
 				ctx.GetString("key", "default")
 			}
 		}()
 	}
 
 	// Concurrent Snapshot
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < numOps; j++ {
+			for range numOps {
 				ctx.Snapshot()
 			}
 		}()
 	}
 
 	// Concurrent AppendLog
-	for i := 0; i < numGoroutines; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			for j := 0; j < numOps; j++ {
-				ctx.AppendLog("log entry")
-			}
-		}(i)
-	}
-
-	// Concurrent Clone
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for j := 0; j < numOps; j++ {
+			for range numOps {
+				ctx.AppendLog("log entry")
+			}
+		}()
+	}
+
+	// Concurrent Clone
+	for range numGoroutines {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range numOps {
 				ctx.Clone()
 			}
 		}()
@@ -269,11 +269,11 @@ func TestContextThreadSafetyMixedOperations(t *testing.T) {
 	numOps := 50
 
 	for _, key := range keys {
-		for i := 0; i < numGoroutines; i++ {
+		for i := range numGoroutines {
 			wg.Add(1)
 			go func(k string, id int) {
 				defer wg.Done()
-				for j := 0; j < numOps; j++ {
+				for j := range numOps {
 					ctx.Set(k, id*numOps+j)
 					ctx.Get(k)
 					ctx.GetString(k, "")

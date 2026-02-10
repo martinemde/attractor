@@ -14,8 +14,7 @@ func EvaluateCondition(condition string, outcome *Outcome, ctx *Context) bool {
 		return true
 	}
 
-	clauses := strings.Split(condition, "&&")
-	for _, clause := range clauses {
+	for clause := range strings.SplitSeq(condition, "&&") {
 		clause = strings.TrimSpace(clause)
 		if clause == "" {
 			continue
@@ -30,19 +29,13 @@ func EvaluateCondition(condition string, outcome *Outcome, ctx *Context) bool {
 // evaluateClause evaluates a single clause against an outcome and context.
 func evaluateClause(clause string, outcome *Outcome, ctx *Context) bool {
 	// Check for != operator first (before = to avoid matching the = in !=)
-	if idx := strings.Index(clause, "!="); idx != -1 {
-		key := strings.TrimSpace(clause[:idx])
-		value := strings.TrimSpace(clause[idx+2:])
-		value = unquote(value)
-		return resolveKey(key, outcome, ctx) != value
+	if key, value, ok := strings.Cut(clause, "!="); ok {
+		return resolveKey(strings.TrimSpace(key), outcome, ctx) != unquote(strings.TrimSpace(value))
 	}
 
 	// Check for = operator
-	if idx := strings.Index(clause, "="); idx != -1 {
-		key := strings.TrimSpace(clause[:idx])
-		value := strings.TrimSpace(clause[idx+1:])
-		value = unquote(value)
-		return resolveKey(key, outcome, ctx) == value
+	if key, value, ok := strings.Cut(clause, "="); ok {
+		return resolveKey(strings.TrimSpace(key), outcome, ctx) == unquote(strings.TrimSpace(value))
 	}
 
 	// Bare key: check if truthy (non-empty string)
@@ -71,8 +64,7 @@ func resolveKey(key string, outcome *Outcome, ctx *Context) string {
 	}
 
 	// Handle context.* prefix
-	if strings.HasPrefix(key, "context.") {
-		path := strings.TrimPrefix(key, "context.")
+	if path, ok := strings.CutPrefix(key, "context."); ok {
 		if ctx != nil {
 			// Try with full key first (context.foo)
 			if v, ok := ctx.Get(key); ok {
