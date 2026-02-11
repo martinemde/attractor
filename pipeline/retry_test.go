@@ -20,9 +20,7 @@ func (s *mockSleeper) Sleep(d time.Duration) {
 	s.Calls = append(s.Calls, d)
 }
 
-func boolAttr(key string, value bool) dotparser.Attr {
-	return dotparser.Attr{Key: key, Value: dotparser.Value{Kind: dotparser.ValueBool, Bool: value, Raw: ""}}
-}
+// boolAttr is defined in auto_status_test.go
 
 // --- Backoff Delay Calculation Tests ---
 

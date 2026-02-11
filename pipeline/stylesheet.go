@@ -14,9 +14,11 @@ type SelectorType int
 const (
 	// SelectorUniversal matches all nodes (*). Specificity: 0.
 	SelectorUniversal SelectorType = iota
-	// SelectorClass matches nodes by class name (.name). Specificity: 1.
+	// SelectorShape matches nodes by shape name (e.g., box). Specificity: 1.
+	SelectorShape
+	// SelectorClass matches nodes by class name (.name). Specificity: 2.
 	SelectorClass
-	// SelectorID matches nodes by exact ID (#id). Specificity: 2.
+	// SelectorID matches nodes by exact ID (#id). Specificity: 3.
 	SelectorID
 )
 
@@ -56,6 +58,9 @@ var classNameRE = regexp.MustCompile(`^[a-z0-9-]+$`)
 
 // identifierRE matches valid identifiers for node IDs.
 var identifierRE = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
+
+// shapeNameRE matches valid shape names (lowercase identifiers).
+var shapeNameRE = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_]*$`)
 
 // ParseStylesheet parses a CSS-like stylesheet string into a Stylesheet.
 func ParseStylesheet(source string) (*Stylesheet, error) {
@@ -153,7 +158,12 @@ func parseSelector(source string) (StyleSelector, string, error) {
 		}
 		return StyleSelector{Type: SelectorID, Value: name}, rest, nil
 	default:
-		return StyleSelector{}, "", fmt.Errorf("expected selector starting with '*', '.', or '#', got %q", truncate(source, 20))
+		// Bare identifier: shape-based selector (e.g., "box", "diamond")
+		name, rest := parseIdentifierLike(source, shapeNameRE)
+		if name == "" {
+			return StyleSelector{}, "", fmt.Errorf("expected selector starting with '*', '.', '#', or shape name, got %q", truncate(source, 20))
+		}
+		return StyleSelector{Type: SelectorShape, Value: name}, rest, nil
 	}
 }
 
@@ -323,6 +333,8 @@ func selectorMatchesNode(selector StyleSelector, node *dotparser.Node) bool {
 	switch selector.Type {
 	case SelectorUniversal:
 		return true
+	case SelectorShape:
+		return nodeHasShape(node, selector.Value)
 	case SelectorID:
 		return node.ID == selector.Value
 	case SelectorClass:
@@ -330,6 +342,15 @@ func selectorMatchesNode(selector StyleSelector, node *dotparser.Node) bool {
 	default:
 		return false
 	}
+}
+
+// nodeHasShape returns true if the node's shape attribute matches the given shape name.
+func nodeHasShape(node *dotparser.Node, shapeName string) bool {
+	shapeAttr, ok := node.Attr("shape")
+	if !ok {
+		return false
+	}
+	return shapeAttr.Str == shapeName
 }
 
 // nodeHasClass returns true if the node's class attribute contains the given class.

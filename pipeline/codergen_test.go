@@ -332,7 +332,8 @@ func TestRun_AppliesTransforms(t *testing.T) {
 	graph := newTestGraph(
 		[]*dotparser.Node{
 			newNode("start", strAttr("shape", "Mdiamond")),
-			newNode("task", strAttr("prompt", "Original prompt")),
+			// Use fidelity=full to skip preamble generation for exact prompt matching
+			newNode("task", strAttr("prompt", "Original prompt"), strAttr("fidelity", "full")),
 			newNode("exit", strAttr("shape", "Msquare")),
 		},
 		[]*dotparser.Edge{
@@ -361,9 +362,10 @@ func TestRun_FullLinearPipeline_Simulation(t *testing.T) {
 	graph := newTestGraph(
 		[]*dotparser.Node{
 			newNode("start", strAttr("shape", "Mdiamond")),
-			newNode("plan", strAttr("shape", "box"), strAttr("prompt", "Create a plan for: $goal")),
-			newNode("implement", strAttr("shape", "box"), strAttr("prompt", "Implement the plan")),
-			newNode("review", strAttr("shape", "box"), strAttr("label", "Review the implementation")),
+			// Use fidelity=full to skip preamble generation for exact prompt matching
+			newNode("plan", strAttr("shape", "box"), strAttr("prompt", "Create a plan for: $goal"), strAttr("fidelity", "full")),
+			newNode("implement", strAttr("shape", "box"), strAttr("prompt", "Implement the plan"), strAttr("fidelity", "full")),
+			newNode("review", strAttr("shape", "box"), strAttr("label", "Review the implementation"), strAttr("fidelity", "full")),
 			newNode("exit", strAttr("shape", "Msquare")),
 		},
 		[]*dotparser.Edge{

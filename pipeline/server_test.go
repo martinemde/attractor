@@ -477,3 +477,83 @@ func TestServer_ListenAndServe(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	assert.Contains(t, string(body), "pipeline-")
 }
+
+func TestServer_GetGraphReturnsGraphVisualization(t *testing.T) {
+	server := NewPipelineServer(DefaultRegistry(), mockParser)
+	handler := server.Handler()
+
+	// Create a pipeline
+	reqBody := `{"dot_source": "digraph { start -> exit }"}`
+	req := httptest.NewRequest("POST", "/pipelines", strings.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	var createResp createPipelineResponse
+	json.NewDecoder(w.Body).Decode(&createResp)
+
+	// Get graph
+	req = httptest.NewRequest("GET", "/pipelines/"+createResp.ID+"/graph", nil)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	contentType := w.Header().Get("Content-Type")
+	body := w.Body.String()
+
+	// Either SVG (if Graphviz is available) or DOT source (fallback)
+	if contentType == "image/svg+xml" {
+		assert.Contains(t, body, "<svg")
+		assert.Contains(t, body, "</svg>")
+	} else {
+		assert.Equal(t, "text/vnd.graphviz", contentType)
+		assert.Contains(t, body, "digraph")
+		assert.Contains(t, body, "->")
+	}
+}
+
+func TestServer_GetGraphNotFound(t *testing.T) {
+	server := NewPipelineServer(DefaultRegistry(), mockParser)
+	handler := server.Handler()
+
+	req := httptest.NewRequest("GET", "/pipelines/nonexistent/graph", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestGraphToDOT(t *testing.T) {
+	graph := &dotparser.Graph{
+		Name: "TestGraph",
+		GraphAttrs: []dotparser.Attr{
+			{Key: "goal", Value: dotparser.Value{Kind: dotparser.ValueString, Raw: `"test goal"`}},
+		},
+		Nodes: []*dotparser.Node{
+			{ID: "start", Attrs: []dotparser.Attr{{Key: "shape", Value: dotparser.Value{Kind: dotparser.ValueString, Raw: "Mdiamond"}}}},
+			{ID: "task", Attrs: []dotparser.Attr{{Key: "label", Value: dotparser.Value{Kind: dotparser.ValueString, Raw: `"Do Work"`}}}},
+			{ID: "exit", Attrs: []dotparser.Attr{{Key: "shape", Value: dotparser.Value{Kind: dotparser.ValueString, Raw: "Msquare"}}}},
+		},
+		Edges: []*dotparser.Edge{
+			{From: "start", To: "task"},
+			{From: "task", To: "exit", Attrs: []dotparser.Attr{{Key: "label", Value: dotparser.Value{Kind: dotparser.ValueString, Raw: `"done"`}}}},
+		},
+	}
+
+	dot := graphToDOT(graph)
+
+	// Check graph structure
+	assert.Contains(t, dot, "digraph TestGraph {")
+	assert.Contains(t, dot, `graph [goal="test goal"]`)
+
+	// Check nodes
+	assert.Contains(t, dot, "start [shape=Mdiamond]")
+	assert.Contains(t, dot, `task [label="Do Work"]`)
+	assert.Contains(t, dot, "exit [shape=Msquare]")
+
+	// Check edges
+	assert.Contains(t, dot, "start -> task")
+	assert.Contains(t, dot, `task -> exit [label="done"]`)
+}

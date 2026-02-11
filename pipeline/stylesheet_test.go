@@ -37,7 +37,7 @@ func TestParseStylesheet_ClassSelector(t *testing.T) {
 	rule := stylesheet.Rules[0]
 	assert.Equal(t, SelectorClass, rule.Selector.Type)
 	assert.Equal(t, "code", rule.Selector.Value)
-	assert.Equal(t, 1, rule.Selector.Specificity())
+	assert.Equal(t, 2, rule.Selector.Specificity())
 
 	require.Len(t, rule.Declarations, 1)
 	assert.Equal(t, "llm_model", rule.Declarations[0].Property)
@@ -55,7 +55,7 @@ func TestParseStylesheet_IDSelector(t *testing.T) {
 	rule := stylesheet.Rules[0]
 	assert.Equal(t, SelectorID, rule.Selector.Type)
 	assert.Equal(t, "review", rule.Selector.Value)
-	assert.Equal(t, 2, rule.Selector.Specificity())
+	assert.Equal(t, 3, rule.Selector.Specificity())
 
 	require.Len(t, rule.Declarations, 1)
 	assert.Equal(t, "reasoning_effort", rule.Declarations[0].Property)
@@ -559,6 +559,109 @@ func TestStylesheetTransform_SpecificityOrder(t *testing.T) {
 	assert.Equal(t, "id", model.Str)
 	effort, _ := aNode.Attr("reasoning_effort")
 	assert.Equal(t, "high", effort.Str)
+}
+
+func TestParseStylesheet_ShapeSelector(t *testing.T) {
+	source := `box { llm_model: claude-opus-4-6; }`
+
+	stylesheet, err := ParseStylesheet(source)
+
+	require.NoError(t, err)
+	require.Len(t, stylesheet.Rules, 1)
+
+	rule := stylesheet.Rules[0]
+	assert.Equal(t, SelectorShape, rule.Selector.Type)
+	assert.Equal(t, "box", rule.Selector.Value)
+	assert.Equal(t, 1, rule.Selector.Specificity())
+
+	require.Len(t, rule.Declarations, 1)
+	assert.Equal(t, "llm_model", rule.Declarations[0].Property)
+	assert.Equal(t, "claude-opus-4-6", rule.Declarations[0].Value)
+}
+
+func TestSelectorMatchesNode_Shape(t *testing.T) {
+	tests := []struct {
+		name     string
+		selector StyleSelector
+		node     *dotparser.Node
+		expected bool
+	}{
+		{
+			"shape selector matches node with matching shape",
+			StyleSelector{Type: SelectorShape, Value: "box"},
+			newNode("n", strAttr("shape", "box")),
+			true,
+		},
+		{
+			"shape selector no match different shape",
+			StyleSelector{Type: SelectorShape, Value: "box"},
+			newNode("n", strAttr("shape", "diamond")),
+			false,
+		},
+		{
+			"shape selector no match no shape attr",
+			StyleSelector{Type: SelectorShape, Value: "box"},
+			newNode("n"),
+			false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := selectorMatchesNode(tt.selector, tt.node)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestApplyStylesheetToNode_ShapeSpecificity(t *testing.T) {
+	// Test full specificity chain: universal(0) < shape(1) < class(2) < ID(3)
+	graph := newTestGraph(
+		[]*dotparser.Node{
+			newNode("universal_only"),
+			newNode("shape_only", strAttr("shape", "box")),
+			newNode("class_only", strAttr("class", "myclass")),
+			newNode("shape_and_class", strAttr("shape", "box"), strAttr("class", "myclass")),
+			newNode("all_match", strAttr("shape", "box"), strAttr("class", "myclass")),
+		},
+		nil,
+		[]dotparser.Attr{
+			strAttr("model_stylesheet", `
+				* { llm_model: universal; }
+				box { llm_model: shape; }
+				.myclass { llm_model: class; }
+				#all_match { llm_model: id; }
+			`),
+		},
+	)
+
+	transform := &StylesheetTransform{}
+	graph = transform.Apply(graph)
+
+	// universal_only: gets universal rule
+	uNode := graph.NodeByID("universal_only")
+	model, _ := uNode.Attr("llm_model")
+	assert.Equal(t, "universal", model.Str)
+
+	// shape_only: shape overrides universal
+	sNode := graph.NodeByID("shape_only")
+	model, _ = sNode.Attr("llm_model")
+	assert.Equal(t, "shape", model.Str)
+
+	// class_only: class overrides universal (no shape attr so shape rule doesn't match)
+	cNode := graph.NodeByID("class_only")
+	model, _ = cNode.Attr("llm_model")
+	assert.Equal(t, "class", model.Str)
+
+	// shape_and_class: class(2) beats shape(1)
+	scNode := graph.NodeByID("shape_and_class")
+	model, _ = scNode.Attr("llm_model")
+	assert.Equal(t, "class", model.Str)
+
+	// all_match: ID(3) beats everything
+	aNode := graph.NodeByID("all_match")
+	model, _ = aNode.Attr("llm_model")
+	assert.Equal(t, "id", model.Str)
 }
 
 func TestParseStylesheet_ClassNameWithHyphensAndNumbers(t *testing.T) {

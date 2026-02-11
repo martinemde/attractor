@@ -45,10 +45,10 @@ func TestExample_SimpleLinear_ParseValidateExecute(t *testing.T) {
 	diags, err := ValidateOrError(graph)
 	require.NoError(t, err, "validation should pass: %v", diags)
 
-	// Execute with $goal expansion transform
+	// Execute - default transforms (StylesheetTransform, VariableExpansionTransform)
+	// are automatically applied
 	result, err := Run(graph, &RunConfig{
-		LogsRoot:   tmpDir,
-		Transforms: []Transform{&VariableExpansionTransform{}},
+		LogsRoot: tmpDir,
 	})
 	require.NoError(t, err)
 
@@ -260,10 +260,9 @@ func TestExample_GoalGate_ParseValidateExecute(t *testing.T) {
 	diags, err := ValidateOrError(graph)
 	require.NoError(t, err, "validation should pass: %v", diags)
 
-	// Execute with $goal expansion
+	// Execute - default transforms are automatically applied
 	result, err := Run(graph, &RunConfig{
-		LogsRoot:   tmpDir,
-		Transforms: []Transform{&VariableExpansionTransform{}},
+		LogsRoot: tmpDir,
 	})
 	require.NoError(t, err)
 
@@ -429,10 +428,9 @@ func TestExample_MultiStage_ParseValidateExecute(t *testing.T) {
 	diags, err := ValidateOrError(graph)
 	require.NoError(t, err, "validation should pass: %v", diags)
 
-	// Execute
+	// Execute - default transforms are automatically applied
 	result, err := Run(graph, &RunConfig{
-		LogsRoot:   tmpDir,
-		Transforms: []Transform{&VariableExpansionTransform{}},
+		LogsRoot: tmpDir,
 	})
 	require.NoError(t, err)
 

@@ -1,7 +1,12 @@
 package pipeline
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/martinemde/attractor/dotparser"
@@ -19,6 +24,21 @@ const DefaultMaxCycles = 1000
 type ManagerLoopHandler struct {
 	// Sleeper is used for polling delays. If nil, DefaultSleeper is used.
 	Sleeper Sleeper
+
+	// childState tracks active child pipelines for this handler instance.
+	// This is used to monitor child completion and ingest telemetry.
+	childState *childPipelineState
+}
+
+// childPipelineState tracks the state of a running child pipeline.
+type childPipelineState struct {
+	mu          sync.Mutex
+	logsRoot    string
+	graph       *dotparser.Graph
+	result      *RunResult
+	err         error
+	done        bool
+	completedAt time.Time
 }
 
 // NewManagerLoopHandler creates a new ManagerLoopHandler.
@@ -40,7 +60,7 @@ func (h *ManagerLoopHandler) Execute(node *dotparser.Node, ctx *Context, graph *
 
 	// 2. Auto-start child if configured
 	if config.AutoStart {
-		if err := h.startChild(config, ctx); err != nil {
+		if err := h.startChild(config, ctx, logsRoot); err != nil {
 			return Fail("failed to start child pipeline: " + err.Error()), nil
 		}
 	}
@@ -175,37 +195,192 @@ func (h *ManagerLoopHandler) readConfig(node *dotparser.Node, graph *dotparser.G
 }
 
 // startChild starts the child pipeline.
-// For now, this is a stub that sets initial context values.
-// In a full implementation, this would parse the child DOT file and run it
-// in a goroutine, monitoring progress via shared context or file-based communication.
-func (h *ManagerLoopHandler) startChild(config *managerConfig, ctx *Context) error {
-	// Only set initial child status if not already set (allows tests to pre-configure)
-	if _, ok := ctx.Get("stack.child.status"); !ok {
-		ctx.Set("stack.child.status", "running")
+// It reads the child DOT file, parses it, and starts execution in a goroutine.
+// Progress is tracked via file-based telemetry (checkpoint.json and status.json files).
+func (h *ManagerLoopHandler) startChild(config *managerConfig, ctx *Context, logsRoot string) error {
+	// If child status is already set (e.g., by tests), skip actual startup
+	if status, ok := ctx.Get("stack.child.status"); ok && status != "" {
+		ctx.Set("stack.child.dotfile", config.ChildDotfile)
+		return nil
 	}
-	ctx.Set("stack.child.dotfile", config.ChildDotfile)
-	ctx.Set("stack.child.started_at", time.Now().Format(time.RFC3339))
 
-	// In a full implementation:
-	// 1. Parse the child DOT file
-	// 2. Start execution in a goroutine
-	// 3. Set up a communication channel or file-based status updates
+	// Validate dotfile path
+	if config.ChildDotfile == "" {
+		return fmt.Errorf("stack.child_dotfile not specified in graph attributes")
+	}
+
+	// Read and parse the child DOT file
+	dotContent, err := os.ReadFile(config.ChildDotfile)
+	if err != nil {
+		return fmt.Errorf("failed to read child dotfile %q: %w", config.ChildDotfile, err)
+	}
+
+	childGraph, err := dotparser.Parse(dotContent)
+	if err != nil {
+		return fmt.Errorf("failed to parse child dotfile: %w", err)
+	}
+
+	// Create a logs directory for the child pipeline
+	childLogsRoot := ""
+	if logsRoot != "" {
+		childLogsRoot = filepath.Join(logsRoot, "child-"+childGraph.Name)
+		if err := os.MkdirAll(childLogsRoot, 0o755); err != nil {
+			return fmt.Errorf("failed to create child logs directory: %w", err)
+		}
+	}
+
+	// Initialize child state tracking
+	h.childState = &childPipelineState{
+		logsRoot: childLogsRoot,
+		graph:    childGraph,
+	}
+
+	// Set initial context values
+	ctx.Set("stack.child.status", "running")
+	ctx.Set("stack.child.dotfile", config.ChildDotfile)
+	ctx.Set("stack.child.logs_root", childLogsRoot)
+	ctx.Set("stack.child.started_at", time.Now().Format(time.RFC3339))
+	ctx.Set("stack.child.graph_name", childGraph.Name)
+
+	// Start child pipeline execution in a goroutine
+	go func() {
+		childConfig := &RunConfig{
+			LogsRoot: childLogsRoot,
+			Sleeper:  h.Sleeper,
+			// Child inherits the default registry
+		}
+
+		result, err := RunLoop(childGraph, childConfig)
+
+		// Update child state with result
+		h.childState.mu.Lock()
+		h.childState.result = result
+		h.childState.err = err
+		h.childState.done = true
+		h.childState.completedAt = time.Now()
+		h.childState.mu.Unlock()
+	}()
 
 	return nil
 }
 
-// ingestChildTelemetry reads child status from various sources.
-// For now, this reads from context keys that would be set by a running child.
+// ingestChildTelemetry reads child status from various sources and updates context.
+// It checks both the in-memory child state (for goroutine-based execution) and
+// file-based telemetry (checkpoint.json and status.json files).
 func (h *ManagerLoopHandler) ingestChildTelemetry(ctx *Context) {
-	// In a full implementation, this would:
-	// 1. Read checkpoint files from the child's logs directory
-	// 2. Parse status.json files from completed stages
-	// 3. Update context with child progress metrics
+	// First, check in-memory child state from goroutine execution
+	if h.childState != nil {
+		h.childState.mu.Lock()
+		done := h.childState.done
+		result := h.childState.result
+		childErr := h.childState.err
+		logsRoot := h.childState.logsRoot
+		h.childState.mu.Unlock()
 
-	// For now, we just ensure the context keys are accessible
-	// The actual telemetry would come from:
-	// - stack.child.status: "running", "completed", "failed"
-	// - stack.child.outcome: "success", "fail", "partial_success"
-	// - stack.child.current_node: the active stage ID
-	// - stack.child.completed_nodes: list of completed node IDs
+		if done {
+			// Child goroutine has completed
+			if childErr != nil {
+				ctx.Set("stack.child.status", "failed")
+				ctx.Set("stack.child.failure_reason", childErr.Error())
+				return
+			}
+			if result != nil {
+				ctx.Set("stack.child.status", "completed")
+				if result.FinalOutcome != nil {
+					ctx.Set("stack.child.outcome", result.FinalOutcome.Status.String())
+					if result.FinalOutcome.FailureReason != "" {
+						ctx.Set("stack.child.failure_reason", result.FinalOutcome.FailureReason)
+					}
+				} else {
+					ctx.Set("stack.child.outcome", "success")
+				}
+				ctx.Set("stack.child.completed_nodes", result.CompletedNodes)
+				return
+			}
+		}
+
+		// Child still running - try to read telemetry from files
+		if logsRoot != "" {
+			h.ingestTelemetryFromFiles(ctx, logsRoot)
+		}
+		return
+	}
+
+	// Fallback: try to read from context-specified logs root
+	logsRoot := ctx.GetString("stack.child.logs_root", "")
+	if logsRoot != "" {
+		h.ingestTelemetryFromFiles(ctx, logsRoot)
+	}
+}
+
+// ingestTelemetryFromFiles reads telemetry from checkpoint and status files.
+func (h *ManagerLoopHandler) ingestTelemetryFromFiles(ctx *Context, logsRoot string) {
+	// Read checkpoint.json for current progress
+	checkpoint, err := LoadCheckpoint(logsRoot)
+	if err == nil && checkpoint != nil {
+		// Update context with checkpoint data
+		ctx.Set("stack.child.current_node", checkpoint.CurrentNode)
+		ctx.Set("stack.child.completed_nodes", checkpoint.CompletedNodes)
+
+		// Copy retry counts with stack.child prefix
+		for nodeID, count := range checkpoint.NodeRetries {
+			ctx.Set("stack.child.retry_count."+nodeID, count)
+		}
+	}
+
+	// Read status.json files from completed node directories
+	nodeOutcomes := make(map[string]string)
+	nodeArtifacts := make(map[string][]string)
+
+	entries, err := os.ReadDir(logsRoot)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		nodeID := entry.Name()
+		nodeDir := filepath.Join(logsRoot, nodeID)
+
+		// Read status.json
+		statusPath := filepath.Join(nodeDir, "status.json")
+		statusData, err := os.ReadFile(statusPath)
+		if err != nil {
+			continue
+		}
+
+		var status map[string]any
+		if err := json.Unmarshal(statusData, &status); err != nil {
+			continue
+		}
+
+		if statusStr, ok := status["status"].(string); ok {
+			nodeOutcomes[nodeID] = statusStr
+		}
+
+		// Collect artifacts from node directory
+		artifactEntries, err := os.ReadDir(nodeDir)
+		if err != nil {
+			continue
+		}
+		var artifacts []string
+		for _, ae := range artifactEntries {
+			if ae.Name() != "status.json" {
+				artifacts = append(artifacts, filepath.Join(nodeDir, ae.Name()))
+			}
+		}
+		if len(artifacts) > 0 {
+			nodeArtifacts[nodeID] = artifacts
+		}
+	}
+
+	// Update context with aggregated data
+	if len(nodeOutcomes) > 0 {
+		ctx.Set("stack.child.node_outcomes", nodeOutcomes)
+	}
+	if len(nodeArtifacts) > 0 {
+		ctx.Set("stack.child.artifacts", nodeArtifacts)
+	}
 }

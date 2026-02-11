@@ -18,6 +18,8 @@ const (
 	EventToolCallStart       EventKind = "tool_call_start"
 	EventToolCallOutputDelta EventKind = "tool_call_output_delta"
 	EventToolCallEnd         EventKind = "tool_call_end"
+	EventToolHook            EventKind = "tool_hook"
+	EventToolCallSkipped     EventKind = "tool_call_skipped"
 	EventSteeringInjected    EventKind = "steering_injected"
 	EventTurnLimit           EventKind = "turn_limit"
 	EventLoopDetection       EventKind = "loop_detection"

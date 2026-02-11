@@ -136,6 +136,8 @@ func isRefusalResponse(response string) bool {
 // buildPrompt constructs the prompt from node attributes with variable expansion.
 // It expands both graph-level attributes (like $goal) and context variables
 // (like $last_response, $last_stage) to allow stages to reference prior output.
+// If a preamble is available in context (from the Preamble Transform), it is
+// prepended to provide context carryover based on the resolved fidelity mode.
 func (h *CodergenHandler) buildPrompt(node *dotparser.Node, graph *dotparser.Graph, ctx *Context) string {
 	// Priority: prompt attr > label attr > node ID
 	var prompt string
@@ -160,6 +162,15 @@ func (h *CodergenHandler) buildPrompt(node *dotparser.Node, graph *dotparser.Gra
 		for key, value := range snapshot {
 			varName := "$" + key
 			prompt = strings.ReplaceAll(prompt, varName, toString(value))
+		}
+	}
+
+	// Prepend preamble if available (from Preamble Transform based on fidelity mode)
+	// The preamble provides context carryover for non-full fidelity modes.
+	if ctx != nil {
+		preamble := GetPreambleFromContext(ctx)
+		if preamble != "" {
+			prompt = preamble + "\n\n---\n\n" + prompt
 		}
 	}
 

@@ -43,6 +43,15 @@ type RunConfig struct {
 	// PostToolHook is a shell command to run after tool calls.
 	// Tool metadata and result are passed via environment variables.
 	PostToolHook string
+
+	// StartAt overrides the start node. If set, execution begins at this node
+	// instead of the default start node (shape=Mdiamond or id=start).
+	// Used by RunLoop to restart from a loop_restart target.
+	StartAt string
+
+	// MaxLoopRestarts limits the number of loop restarts when using RunLoop.
+	// If zero, DefaultMaxLoopRestarts is used.
+	MaxLoopRestarts int
 }
 
 // RunResult contains the results of a pipeline execution.
@@ -58,6 +67,16 @@ type RunResult struct {
 
 	// NodeOutcomes maps node IDs to their execution outcomes.
 	NodeOutcomes map[string]*Outcome
+
+	// LoopRestart indicates that the pipeline should restart with a fresh log directory.
+	// When true, the caller should create a new log directory and call Run again.
+	// Per Spec Section 2.7: "When true, terminates the current run and re-launches
+	// with a fresh log directory."
+	LoopRestart bool
+
+	// LoopRestartTarget is the node ID to restart from when LoopRestart is true.
+	// This is the target node of the edge that had loop_restart=true.
+	LoopRestartTarget string
 }
 
 // Interviewer is the interface for human-in-the-loop interactions.
@@ -109,16 +128,61 @@ type Answer struct {
 	Timeout        bool    // No response within timeout
 }
 
+// DefaultMaxLoopRestarts is the maximum number of loop restarts before giving up.
+const DefaultMaxLoopRestarts = 100
+
+// RunLoop executes a pipeline with loop restart support.
+// When the pipeline signals a loop restart (via a loop_restart=true edge attribute),
+// RunLoop creates a fresh log directory and re-runs the pipeline from the restart
+// target node. Per Spec Section 2.7: "When true, terminates the current run and
+// re-launches with a fresh log directory."
+func RunLoop(graph *dotparser.Graph, config *RunConfig) (*RunResult, error) {
+	if config == nil {
+		config = &RunConfig{}
+	}
+
+	maxRestarts := config.MaxLoopRestarts
+	if maxRestarts <= 0 {
+		maxRestarts = DefaultMaxLoopRestarts
+	}
+
+	baseLogsRoot := config.LogsRoot
+
+	for iteration := 0; iteration <= maxRestarts; iteration++ {
+		// Create a fresh log directory for each restart iteration
+		iterConfig := *config
+		if baseLogsRoot != "" && iteration > 0 {
+			iterConfig.LogsRoot = filepath.Join(baseLogsRoot, fmt.Sprintf("restart-%d", iteration))
+		}
+
+		result, err := Run(graph, &iterConfig)
+		if err != nil {
+			return result, err
+		}
+
+		if !result.LoopRestart {
+			return result, nil
+		}
+
+		// Set up for restart from the target node
+		config.StartAt = result.LoopRestartTarget
+	}
+
+	return nil, fmt.Errorf("max loop restarts (%d) exceeded", maxRestarts)
+}
+
 // Run executes a pipeline graph from start to completion.
 func Run(graph *dotparser.Graph, config *RunConfig) (*RunResult, error) {
 	if config == nil {
 		config = &RunConfig{}
 	}
 
-	// Apply transforms before execution
-	if len(config.Transforms) > 0 {
-		graph = ApplyTransforms(graph, config.Transforms)
-	}
+	// Apply default transforms (StylesheetTransform, VariableExpansionTransform)
+	// followed by any user-provided transforms. Per attractor-spec.md Section 8.5,
+	// the stylesheet is applied after parsing and before validation.
+	allTransforms := DefaultTransforms()
+	allTransforms = append(allTransforms, config.Transforms...)
+	graph = ApplyTransforms(graph, allTransforms)
 
 	ctx := NewContext()
 	mirrorGraphAttributes(graph, ctx)
@@ -131,10 +195,18 @@ func Run(graph *dotparser.Graph, config *RunConfig) (*RunResult, error) {
 		}
 	}
 
-	// Find start node
-	currentNode := findStartNode(graph)
-	if currentNode == nil {
-		return nil, errors.New("no start node found (shape=Mdiamond or id=start/Start)")
+	// Find start node: use StartAt override or default resolution
+	var currentNode *dotparser.Node
+	if config.StartAt != "" {
+		currentNode = graph.NodeByID(config.StartAt)
+		if currentNode == nil {
+			return nil, fmt.Errorf("start-at node %q not found in graph", config.StartAt)
+		}
+	} else {
+		currentNode = findStartNode(graph)
+		if currentNode == nil {
+			return nil, errors.New("no start node found (shape=Mdiamond or id=start/Start)")
+		}
 	}
 
 	// Generate a unique run ID
@@ -195,6 +267,11 @@ func executeWithRetry(
 			}
 			// Out of retries
 			return Fail(fmt.Sprintf("max retries exceeded: %v", err))
+		}
+
+		// Handle nil outcome - return nil for auto_status handling in runFromState
+		if outcome == nil {
+			return nil
 		}
 
 		// Handle outcome-based routing

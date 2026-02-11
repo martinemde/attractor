@@ -22,7 +22,19 @@ type BranchResult struct {
 // Each branch receives an isolated clone of the parent context and runs independently.
 // The handler waits for all branches to complete (or applies a configurable join policy)
 // before returning.
-type ParallelHandler struct{}
+type ParallelHandler struct {
+	// Registry is the handler registry to resolve handlers for branch target nodes.
+	// If nil, executeBranchNode falls back to test_outcome attribute behavior.
+	Registry *HandlerRegistry
+}
+
+// NewParallelHandler creates a new ParallelHandler with the given registry.
+// The registry is used to resolve handlers for branch target nodes during
+// parallel execution. Pass nil for test/simulation mode which uses test_outcome
+// attributes on nodes.
+func NewParallelHandler(registry *HandlerRegistry) *ParallelHandler {
+	return &ParallelHandler{Registry: registry}
+}
 
 // Execute runs parallel branches based on outgoing edges from this node.
 func (h *ParallelHandler) Execute(node *dotparser.Node, ctx *Context, graph *dotparser.Graph, logsRoot string) (*Outcome, error) {
@@ -101,7 +113,7 @@ func (h *ParallelHandler) Execute(node *dotparser.Node, ctx *Context, graph *dot
 
 			// Execute the target node's handler directly (not the full engine loop)
 			// We need to resolve the handler from the registry
-			outcome := executeBranchNode(targetNode, branchCtx, graph, logsRoot)
+			outcome := executeBranchNode(targetNode, branchCtx, graph, logsRoot, h.Registry)
 
 			results[idx] = &BranchResult{
 				NodeID:  e.To,
@@ -198,16 +210,9 @@ func (h *ParallelHandler) Execute(node *dotparser.Node, ctx *Context, graph *dot
 }
 
 // executeBranchNode executes a single branch target node.
-// This is a simplified execution that runs just the target node's handler.
-func executeBranchNode(node *dotparser.Node, _ *Context, _ *dotparser.Graph, _ string) *Outcome {
-	// Get handler for the node by resolving its type
-	// Since we don't have direct access to the registry here, we use a simple approach:
-	// Check node attributes to determine handler type
-
-	// For now, we'll simulate execution based on node attributes
-	// In a full implementation, this would use the registry
-
-	// Check for explicit outcome attribute (useful for testing)
+// This resolves the appropriate handler from the registry and executes it.
+func executeBranchNode(node *dotparser.Node, ctx *Context, graph *dotparser.Graph, logsRoot string, registry *HandlerRegistry) *Outcome {
+	// Check for explicit test outcome attribute first (useful for testing)
 	if outcomeAttr, ok := node.Attr("test_outcome"); ok {
 		switch outcomeAttr.Str {
 		case "success":
@@ -227,8 +232,20 @@ func executeBranchNode(node *dotparser.Node, _ *Context, _ *dotparser.Graph, _ s
 		}
 	}
 
-	// Default: return success for the branch
-	return Success().WithNotes(fmt.Sprintf("branch %s executed", node.ID))
+	// If registry is available, resolve and execute the proper handler
+	if registry != nil {
+		handler := registry.Resolve(node)
+		if handler != nil {
+			outcome, err := handler.Execute(node, ctx, graph, logsRoot)
+			if err != nil {
+				return Fail(fmt.Sprintf("branch %s handler error: %v", node.ID, err))
+			}
+			return outcome
+		}
+	}
+
+	// Fallback: return success for the branch (for backwards compatibility/testing)
+	return Success().WithNotes(fmt.Sprintf("branch %s executed (no handler)", node.ID))
 }
 
 // Helper functions for reading node attributes with defaults

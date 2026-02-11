@@ -33,6 +33,22 @@ type SessionConfig struct {
 	MaxSubagentDepth        int            `json:"max_subagent_depth"`
 	UserInstructions        string         `json:"user_instructions,omitempty"` // appended last to system prompt
 	subagentDepth           int            // internal: current nesting depth
+
+	// PreToolHook is a shell command to run before each tool call.
+	// Tool metadata is passed via environment variables and stdin JSON.
+	// Exit code 0 means proceed; non-zero means skip the tool call.
+	PreToolHook string `json:"pre_tool_hook,omitempty"`
+
+	// PostToolHook is a shell command to run after each tool call.
+	// Tool metadata and result are passed via environment variables and stdin JSON.
+	// Primarily for logging and auditing.
+	PostToolHook string `json:"post_tool_hook,omitempty"`
+
+	// LogsRoot is the filesystem path for log files where hook results are recorded.
+	LogsRoot string `json:"logs_root,omitempty"`
+
+	// NodeID is the current pipeline node ID, used for hook context.
+	NodeID string `json:"node_id,omitempty"`
 }
 
 // DefaultSessionConfig returns the spec-default configuration.
@@ -425,14 +441,53 @@ func (s *Session) executeToolCallsParallel(ctx context.Context, toolCalls []unif
 }
 
 // executeSingleTool handles the full tool execution pipeline:
-// lookup -> execute -> truncate -> emit -> return
+// pre-hook -> lookup -> execute -> post-hook -> truncate -> emit -> return
 func (s *Session) executeSingleTool(_ context.Context, toolCall unifiedllm.ToolCall) unifiedllm.ToolResult {
 	s.emitter.Emit(EventToolCallStart, map[string]interface{}{
 		"tool_name": toolCall.Name,
 		"call_id":   toolCall.ID,
 	})
 
-	// 1. Lookup tool in registry.
+	// Read hook configuration
+	s.mu.Lock()
+	preHook := s.config.PreToolHook
+	postHook := s.config.PostToolHook
+	logsRoot := s.config.LogsRoot
+	nodeID := s.config.NodeID
+	s.mu.Unlock()
+
+	// Build tool call metadata for hooks
+	metadata := ToolCallMetadata{
+		ToolName:  toolCall.Name,
+		ToolID:    toolCall.ID,
+		Arguments: toolCall.Arguments,
+		NodeID:    nodeID,
+	}
+	if logsRoot != "" && nodeID != "" {
+		metadata.StageDir = logsRoot + "/" + nodeID
+	}
+
+	// 1. Run pre-hook if configured
+	if preHook != "" {
+		preResult := RunPreToolHook(preHook, metadata, logsRoot)
+		LogToolHookResult("pre", preResult, logsRoot, nodeID, s.emitter)
+
+		// If pre-hook returns non-zero, skip the tool call
+		if preResult.Skipped {
+			s.emitter.Emit(EventToolCallSkipped, map[string]interface{}{
+				"tool_name": toolCall.Name,
+				"call_id":   toolCall.ID,
+				"reason":    "pre-hook returned non-zero exit code",
+			})
+			return unifiedllm.ToolResult{
+				ToolCallID: toolCall.ID,
+				Content:    fmt.Sprintf("Tool call skipped by pre-hook (exit code %d)", preResult.ExitCode),
+				IsError:    false,
+			}
+		}
+	}
+
+	// 2. Lookup tool in registry.
 	registered := s.profile.ToolRegistry().Get(toolCall.Name)
 	if registered == nil {
 		errorMsg := fmt.Sprintf("Unknown tool: %s", toolCall.Name)
@@ -447,35 +502,51 @@ func (s *Session) executeSingleTool(_ context.Context, toolCall unifiedllm.ToolC
 		}
 	}
 
-	// 2. Execute via execution environment.
+	// 3. Execute via execution environment.
 	rawOutput, err := registered.Executor(toolCall.Arguments, s.env)
+	isError := err != nil
 	if err != nil {
-		errorMsg := fmt.Sprintf("Tool error (%s): %v", toolCall.Name, err)
+		rawOutput = fmt.Sprintf("Tool error (%s): %v", toolCall.Name, err)
+	}
+
+	// 4. Run post-hook if configured (for logging/auditing)
+	if postHook != "" {
+		callResult := ToolCallResult{
+			ToolCallMetadata: metadata,
+			Output:           rawOutput,
+			IsError:          isError,
+		}
+		postResult := RunPostToolHook(postHook, callResult, logsRoot)
+		LogToolHookResult("post", postResult, logsRoot, nodeID, s.emitter)
+		// Post-hook failures are recorded but don't affect the tool result
+	}
+
+	if isError {
 		s.emitter.Emit(EventToolCallEnd, map[string]interface{}{
 			"call_id": toolCall.ID,
-			"error":   errorMsg,
+			"error":   rawOutput,
 		})
 		return unifiedllm.ToolResult{
 			ToolCallID: toolCall.ID,
-			Content:    errorMsg,
+			Content:    rawOutput,
 			IsError:    true,
 		}
 	}
 
-	// 3. Truncate output before sending to LLM.
+	// 5. Truncate output before sending to LLM.
 	s.mu.Lock()
 	charLimits := s.config.ToolOutputLimits
 	lineLimits := s.config.ToolLineLimits
 	s.mu.Unlock()
 	truncatedOutput := TruncateToolOutput(rawOutput, toolCall.Name, charLimits, lineLimits)
 
-	// 4. Emit full output via event stream (not truncated).
+	// 6. Emit full output via event stream (not truncated).
 	s.emitter.Emit(EventToolCallEnd, map[string]interface{}{
 		"call_id": toolCall.ID,
 		"output":  rawOutput, // Full untruncated output.
 	})
 
-	// 5. Return truncated output as ToolResult.
+	// 7. Return truncated output as ToolResult.
 	return unifiedllm.ToolResult{
 		ToolCallID: toolCall.ID,
 		Content:    truncatedOutput,

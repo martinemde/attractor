@@ -1,6 +1,8 @@
 package pipeline
 
 import (
+	"strings"
+
 	"github.com/martinemde/attractor/dotparser"
 )
 
@@ -113,8 +115,19 @@ func ResolveThread(edge *dotparser.Edge, node *dotparser.Node, graph *dotparser.
 	}
 
 	// 4. Derived class from enclosing subgraph
-	// NOTE: Subgraph class derivation would require additional AST support.
-	// For now, we skip this step as the dotparser doesn't expose subgraph membership.
+	// The dotparser appends a derived class to nodes inside subgraphs,
+	// derived from the subgraph's label (e.g., "Loop A" -> "loop-a").
+	// Use the first class as the thread ID.
+	if node != nil {
+		if classAttr, ok := node.Attr("class"); ok && classAttr.Str != "" {
+			// Class can be comma-separated (e.g., "loop-a,critical"); use the first one
+			className := classAttr.Str
+			if idx := strings.Index(className, ","); idx != -1 {
+				className = className[:idx]
+			}
+			return className
+		}
+	}
 
 	// 5. Fallback to previous node ID
 	return previousNodeID

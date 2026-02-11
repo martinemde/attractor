@@ -119,13 +119,13 @@ func runPipeline(cmd *cobra.Command, args []string) error {
 		EventEmitter: emitter,
 	}
 
-	// Run the pipeline.
+	// Run the pipeline with loop restart support.
 	fmt.Fprintf(os.Stderr, "[pipeline] Starting: %s\n", graph.Name)
 	if goalAttr, ok := graph.GraphAttr("goal"); ok {
 		fmt.Fprintf(os.Stderr, "[pipeline] Goal: %s\n", goalAttr.Str)
 	}
 
-	result, err := pipeline.Run(graph, config)
+	result, err := pipeline.RunLoop(graph, config)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[pipeline] Failed: %v\n", err)
 		return err

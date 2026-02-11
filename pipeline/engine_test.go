@@ -53,6 +53,10 @@ func intAttr(key string, value int64) dotparser.Attr {
 	return dotparser.Attr{Key: key, Value: dotparser.Value{Kind: dotparser.ValueInt, Int: value, Raw: ""}}
 }
 
+func boolAttr(key string, value bool) dotparser.Attr {
+	return dotparser.Attr{Key: key, Value: dotparser.Value{Kind: dotparser.ValueBool, Bool: value, Raw: ""}}
+}
+
 func TestRun_MinimalStartExit(t *testing.T) {
 	// Simple start -> exit pipeline
 	graph := newTestGraph(
@@ -398,4 +402,410 @@ type HandlerFunc func(node *dotparser.Node, ctx *Context, graph *dotparser.Graph
 
 func (f HandlerFunc) Execute(node *dotparser.Node, ctx *Context, graph *dotparser.Graph, logsRoot string) (*Outcome, error) {
 	return f(node, ctx, graph, logsRoot)
+}
+
+func TestRun_CurrentNodeSetInContext(t *testing.T) {
+	var capturedNodes []string
+
+	registry := DefaultRegistry()
+	registry.Register("capture", HandlerFunc(func(node *dotparser.Node, ctx *Context, graph *dotparser.Graph, logsRoot string) (*Outcome, error) {
+		if val, ok := ctx.Get("current_node"); ok {
+			capturedNodes = append(capturedNodes, val.(string))
+		}
+		return Success(), nil
+	}))
+
+	graph := newTestGraph(
+		[]*dotparser.Node{
+			newNode("start", strAttr("shape", "Mdiamond")),
+			newNode("A", strAttr("type", "capture")),
+			newNode("B", strAttr("type", "capture")),
+			newNode("exit", strAttr("shape", "Msquare")),
+		},
+		[]*dotparser.Edge{
+			newEdge("start", "A"),
+			newEdge("A", "B"),
+			newEdge("B", "exit"),
+		},
+		nil,
+	)
+
+	result, err := Run(graph, &RunConfig{Registry: registry})
+
+	require.NoError(t, err)
+	assert.Equal(t, []string{"A", "B"}, capturedNodes)
+
+	finalNode, ok := result.Context.Get("current_node")
+	assert.True(t, ok)
+	assert.Equal(t, "exit", finalNode)
+}
+
+// ---------- loop_restart edge attribute tests (Spec Section 2.7) ----------
+
+func TestRun_LoopRestartEdge(t *testing.T) {
+	// When an edge has loop_restart=true, the pipeline should return
+	// with LoopRestart=true and the target node ID
+	mockHandler := &MockHandler{
+		Outcomes: []*Outcome{Success()},
+	}
+
+	registry := DefaultRegistry()
+	registry.Register("mock", mockHandler)
+
+	graph := newTestGraph(
+		[]*dotparser.Node{
+			newNode("start", strAttr("shape", "Mdiamond")),
+			newNode("work", strAttr("type", "mock")),
+			newNode("restart_target", strAttr("type", "mock")),
+			newNode("exit", strAttr("shape", "Msquare")),
+		},
+		[]*dotparser.Edge{
+			newEdge("start", "work"),
+			newEdge("work", "restart_target", boolAttr("loop_restart", true)),
+			newEdge("restart_target", "exit"),
+		},
+		nil,
+	)
+
+	result, err := Run(graph, &RunConfig{Registry: registry})
+
+	require.NoError(t, err)
+	assert.True(t, result.LoopRestart)
+	assert.Equal(t, "restart_target", result.LoopRestartTarget)
+	assert.Equal(t, []string{"start", "work"}, result.CompletedNodes)
+}
+
+func TestRun_LoopRestartFalseDoesNotRestart(t *testing.T) {
+	// When loop_restart=false (explicit), normal execution continues
+	mockHandler := &MockHandler{
+		Outcomes: []*Outcome{Success(), Success()},
+	}
+
+	registry := DefaultRegistry()
+	registry.Register("mock", mockHandler)
+
+	graph := newTestGraph(
+		[]*dotparser.Node{
+			newNode("start", strAttr("shape", "Mdiamond")),
+			newNode("work", strAttr("type", "mock")),
+			newNode("next", strAttr("type", "mock")),
+			newNode("exit", strAttr("shape", "Msquare")),
+		},
+		[]*dotparser.Edge{
+			newEdge("start", "work"),
+			newEdge("work", "next", boolAttr("loop_restart", false)),
+			newEdge("next", "exit"),
+		},
+		nil,
+	)
+
+	result, err := Run(graph, &RunConfig{Registry: registry})
+
+	require.NoError(t, err)
+	assert.False(t, result.LoopRestart)
+	assert.Equal(t, []string{"start", "work", "next"}, result.CompletedNodes)
+}
+
+func TestRun_LoopRestartPreservesNodeOutcomes(t *testing.T) {
+	// Verify that NodeOutcomes are captured even when loop restart occurs
+	mockHandler := &MockHandler{
+		Outcomes: []*Outcome{
+			Success().WithNotes("work completed"),
+		},
+	}
+
+	registry := DefaultRegistry()
+	registry.Register("mock", mockHandler)
+
+	graph := newTestGraph(
+		[]*dotparser.Node{
+			newNode("start", strAttr("shape", "Mdiamond")),
+			newNode("work", strAttr("type", "mock")),
+			newNode("restart_target", strAttr("type", "mock")),
+			newNode("exit", strAttr("shape", "Msquare")),
+		},
+		[]*dotparser.Edge{
+			newEdge("start", "work"),
+			newEdge("work", "restart_target", boolAttr("loop_restart", true)),
+			newEdge("restart_target", "exit"),
+		},
+		nil,
+	)
+
+	result, err := Run(graph, &RunConfig{Registry: registry})
+
+	require.NoError(t, err)
+	assert.True(t, result.LoopRestart)
+
+	// Verify outcomes were recorded
+	workOutcome, ok := result.NodeOutcomes["work"]
+	require.True(t, ok)
+	assert.Equal(t, StatusSuccess, workOutcome.Status)
+	assert.Equal(t, "work completed", workOutcome.Notes)
+}
+
+func TestRun_LoopRestartWithCondition(t *testing.T) {
+	// loop_restart can be combined with conditions on the edge
+	// Only restart when the condition is met
+	mockHandler := &MockHandler{
+		Outcomes: []*Outcome{
+			Success().WithContextUpdate("should_restart", "yes"),
+		},
+	}
+
+	registry := DefaultRegistry()
+	registry.Register("mock", mockHandler)
+
+	graph := newTestGraph(
+		[]*dotparser.Node{
+			newNode("start", strAttr("shape", "Mdiamond")),
+			newNode("work", strAttr("type", "mock")),
+			newNode("restart_target", strAttr("type", "mock")),
+			newNode("continue", strAttr("type", "mock")),
+			newNode("exit", strAttr("shape", "Msquare")),
+		},
+		[]*dotparser.Edge{
+			newEdge("start", "work"),
+			// Restart edge with condition
+			{From: "work", To: "restart_target", Attrs: []dotparser.Attr{
+				strAttr("condition", "should_restart=yes"),
+				boolAttr("loop_restart", true),
+			}},
+			// Normal continue edge (lower priority without condition)
+			newEdge("work", "continue"),
+			newEdge("continue", "exit"),
+			newEdge("restart_target", "exit"),
+		},
+		nil,
+	)
+
+	result, err := Run(graph, &RunConfig{Registry: registry})
+
+	require.NoError(t, err)
+	assert.True(t, result.LoopRestart)
+	assert.Equal(t, "restart_target", result.LoopRestartTarget)
+}
+
+func TestRun_LoopRestartNoAttributeDoesNotRestart(t *testing.T) {
+	// Without loop_restart attribute, normal execution continues
+	mockHandler := &MockHandler{
+		Outcomes: []*Outcome{Success(), Success()},
+	}
+
+	registry := DefaultRegistry()
+	registry.Register("mock", mockHandler)
+
+	graph := newTestGraph(
+		[]*dotparser.Node{
+			newNode("start", strAttr("shape", "Mdiamond")),
+			newNode("work", strAttr("type", "mock")),
+			newNode("next", strAttr("type", "mock")),
+			newNode("exit", strAttr("shape", "Msquare")),
+		},
+		[]*dotparser.Edge{
+			newEdge("start", "work"),
+			newEdge("work", "next"), // No loop_restart attribute
+			newEdge("next", "exit"),
+		},
+		nil,
+	)
+
+	result, err := Run(graph, &RunConfig{Registry: registry})
+
+	require.NoError(t, err)
+	assert.False(t, result.LoopRestart)
+	assert.Empty(t, result.LoopRestartTarget)
+	assert.Equal(t, []string{"start", "work", "next"}, result.CompletedNodes)
+}
+
+// ---------- StartAt tests ----------
+
+func TestRun_StartAtOverridesDefaultStart(t *testing.T) {
+	// StartAt skips the normal start node and begins at the specified node
+	mockHandler := &MockHandler{
+		Outcomes: []*Outcome{Success()},
+	}
+
+	registry := DefaultRegistry()
+	registry.Register("mock", mockHandler)
+
+	graph := newTestGraph(
+		[]*dotparser.Node{
+			newNode("start", strAttr("shape", "Mdiamond")),
+			newNode("middle", strAttr("type", "mock")),
+			newNode("exit", strAttr("shape", "Msquare")),
+		},
+		[]*dotparser.Edge{
+			newEdge("start", "middle"),
+			newEdge("middle", "exit"),
+		},
+		nil,
+	)
+
+	result, err := Run(graph, &RunConfig{
+		Registry: registry,
+		StartAt:  "middle",
+	})
+
+	require.NoError(t, err)
+	// Should skip "start" and begin at "middle"
+	assert.Equal(t, []string{"middle"}, result.CompletedNodes)
+}
+
+func TestRun_StartAtInvalidNodeErrors(t *testing.T) {
+	graph := newTestGraph(
+		[]*dotparser.Node{
+			newNode("start", strAttr("shape", "Mdiamond")),
+			newNode("exit", strAttr("shape", "Msquare")),
+		},
+		[]*dotparser.Edge{
+			newEdge("start", "exit"),
+		},
+		nil,
+	)
+
+	_, err := Run(graph, &RunConfig{StartAt: "nonexistent"})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "start-at node")
+	assert.Contains(t, err.Error(), "nonexistent")
+}
+
+// ---------- RunLoop tests (Spec Section 2.7 caller-side restart) ----------
+
+func TestRunLoop_NoRestart(t *testing.T) {
+	// RunLoop with a normal pipeline (no loop_restart edges) runs once
+	graph := newTestGraph(
+		[]*dotparser.Node{
+			newNode("start", strAttr("shape", "Mdiamond")),
+			newNode("exit", strAttr("shape", "Msquare")),
+		},
+		[]*dotparser.Edge{
+			newEdge("start", "exit"),
+		},
+		nil,
+	)
+
+	result, err := RunLoop(graph, nil)
+
+	require.NoError(t, err)
+	assert.False(t, result.LoopRestart)
+	assert.Equal(t, []string{"start"}, result.CompletedNodes)
+}
+
+func TestRunLoop_SingleRestart(t *testing.T) {
+	// Pipeline restarts once via loop_restart edge, then completes normally
+	// on the second run because the handler returns a different outcome.
+	callCount := 0
+	registry := DefaultRegistry()
+	registry.Register("work", HandlerFunc(func(node *dotparser.Node, ctx *Context, graph *dotparser.Graph, logsRoot string) (*Outcome, error) {
+		callCount++
+		if callCount == 1 {
+			return Success().WithContextUpdate("iteration", "1"), nil
+		}
+		// Second call: set context so condition routes to exit instead of restart
+		return Success().WithPreferredLabel("done"), nil
+	}))
+
+	graph := newTestGraph(
+		[]*dotparser.Node{
+			newNode("start", strAttr("shape", "Mdiamond")),
+			newNode("work", strAttr("type", "work")),
+			newNode("exit", strAttr("shape", "Msquare")),
+		},
+		[]*dotparser.Edge{
+			newEdge("start", "work"),
+			// First edge: restart when preferred_label is not "done"
+			{From: "work", To: "start", Attrs: []dotparser.Attr{
+				boolAttr("loop_restart", true),
+				strAttr("condition", "preferred_label!=done"),
+			}},
+			// Second edge: continue to exit when done
+			{From: "work", To: "exit", Attrs: []dotparser.Attr{
+				strAttr("condition", "preferred_label=done"),
+			}},
+		},
+		nil,
+	)
+
+	result, err := RunLoop(graph, &RunConfig{Registry: registry})
+
+	require.NoError(t, err)
+	assert.False(t, result.LoopRestart)
+	assert.Equal(t, 2, callCount)
+}
+
+func TestRunLoop_FreshLogDirectory(t *testing.T) {
+	// Verify that each restart iteration gets a fresh log directory
+	tmpDir := t.TempDir()
+	var logDirs []string
+
+	registry := DefaultRegistry()
+	callCount := 0
+	registry.Register("work", HandlerFunc(func(node *dotparser.Node, ctx *Context, graph *dotparser.Graph, logsRoot string) (*Outcome, error) {
+		callCount++
+		logDirs = append(logDirs, logsRoot)
+		if callCount <= 2 {
+			return Success(), nil
+		}
+		return Success().WithPreferredLabel("done"), nil
+	}))
+
+	graph := newTestGraph(
+		[]*dotparser.Node{
+			newNode("start", strAttr("shape", "Mdiamond")),
+			newNode("work", strAttr("type", "work")),
+			newNode("exit", strAttr("shape", "Msquare")),
+		},
+		[]*dotparser.Edge{
+			newEdge("start", "work"),
+			{From: "work", To: "start", Attrs: []dotparser.Attr{
+				boolAttr("loop_restart", true),
+				strAttr("condition", "preferred_label!=done"),
+			}},
+			{From: "work", To: "exit", Attrs: []dotparser.Attr{
+				strAttr("condition", "preferred_label=done"),
+			}},
+		},
+		nil,
+	)
+
+	result, err := RunLoop(graph, &RunConfig{
+		Registry: registry,
+		LogsRoot: tmpDir,
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.LoopRestart)
+	assert.Equal(t, 3, callCount)
+
+	// Each restart should use a different log directory
+	assert.NotEqual(t, logDirs[0], logDirs[1], "restart iterations should use different log dirs")
+}
+
+func TestRunLoop_MaxRestartsExceeded(t *testing.T) {
+	// Always restart - should hit the max limit
+	registry := DefaultRegistry()
+	registry.Register("mock", &MockHandler{})
+
+	graph := newTestGraph(
+		[]*dotparser.Node{
+			newNode("start", strAttr("shape", "Mdiamond")),
+			newNode("work", strAttr("type", "mock")),
+			newNode("exit", strAttr("shape", "Msquare")),
+		},
+		[]*dotparser.Edge{
+			newEdge("start", "work"),
+			newEdge("work", "start", boolAttr("loop_restart", true)),
+		},
+		nil,
+	)
+
+	_, err := RunLoop(graph, &RunConfig{
+		Registry:        registry,
+		MaxLoopRestarts: 3,
+	})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max loop restarts")
 }

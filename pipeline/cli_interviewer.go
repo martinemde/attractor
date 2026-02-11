@@ -2,9 +2,11 @@ package pipeline
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 )
 
 // CLIInterviewer implements the Interviewer interface for terminal use.
@@ -17,6 +19,15 @@ type CLIInterviewer struct {
 // NewCLIInterviewer creates a CLIInterviewer that reads from in and writes to out.
 func NewCLIInterviewer(in io.Reader, out io.Writer) *CLIInterviewer {
 	return &CLIInterviewer{In: in, Out: out}
+}
+
+// errTimeout is a sentinel error indicating a timeout occurred during input.
+var errTimeout = errors.New("input timeout")
+
+// readLineResult holds the result of a non-blocking line read.
+type readLineResult struct {
+	line string
+	err  error
 }
 
 // Ask presents a question to the terminal and returns the user's answer.
@@ -54,7 +65,10 @@ func (i *CLIInterviewer) askYesNo(q *Question) (*Answer, error) {
 
 	fmt.Fprintf(i.Out, "%s: ", defaultHint)
 
-	line, err := i.readLine()
+	line, err := i.readLineWithTimeout(q.TimeoutSeconds)
+	if errors.Is(err, errTimeout) {
+		return &Answer{Timeout: true}, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("reading input: %w", err)
 	}
@@ -79,7 +93,10 @@ func (i *CLIInterviewer) askMultipleChoice(q *Question) (*Answer, error) {
 
 	fmt.Fprintf(i.Out, "Choice: ")
 
-	line, err := i.readLine()
+	line, err := i.readLineWithTimeout(q.TimeoutSeconds)
+	if errors.Is(err, errTimeout) {
+		return &Answer{Timeout: true}, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("reading input: %w", err)
 	}
@@ -104,7 +121,10 @@ func (i *CLIInterviewer) askMultipleChoice(q *Question) (*Answer, error) {
 func (i *CLIInterviewer) askFreeform(q *Question) (*Answer, error) {
 	fmt.Fprintf(i.Out, "> ")
 
-	line, err := i.readLine()
+	line, err := i.readLineWithTimeout(q.TimeoutSeconds)
+	if errors.Is(err, errTimeout) {
+		return &Answer{Timeout: true}, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("reading input: %w", err)
 	}
@@ -118,12 +138,46 @@ func (i *CLIInterviewer) askFreeform(q *Question) (*Answer, error) {
 }
 
 func (i *CLIInterviewer) readLine() (string, error) {
-	scanner := bufio.NewScanner(i.In)
-	if scanner.Scan() {
-		return scanner.Text(), nil
+	return i.readLineWithTimeout(0)
+}
+
+// readLineWithTimeout reads a line from input with an optional timeout.
+// When timeoutSeconds > 0, it uses a goroutine and select to implement
+// non-blocking read with timeout. Returns errTimeout if the timeout expires.
+// When timeoutSeconds <= 0, it uses blocking read (original behavior).
+func (i *CLIInterviewer) readLineWithTimeout(timeoutSeconds float64) (string, error) {
+	// No timeout - use blocking read
+	if timeoutSeconds <= 0 {
+		scanner := bufio.NewScanner(i.In)
+		if scanner.Scan() {
+			return scanner.Text(), nil
+		}
+		if err := scanner.Err(); err != nil {
+			return "", err
+		}
+		return "", io.EOF
 	}
-	if err := scanner.Err(); err != nil {
-		return "", err
+
+	// With timeout - use goroutine and select
+	resultCh := make(chan readLineResult, 1)
+	go func() {
+		scanner := bufio.NewScanner(i.In)
+		if scanner.Scan() {
+			resultCh <- readLineResult{line: scanner.Text()}
+			return
+		}
+		if err := scanner.Err(); err != nil {
+			resultCh <- readLineResult{err: err}
+			return
+		}
+		resultCh <- readLineResult{err: io.EOF}
+	}()
+
+	timeout := time.Duration(timeoutSeconds * float64(time.Second))
+	select {
+	case result := <-resultCh:
+		return result.line, result.err
+	case <-time.After(timeout):
+		return "", errTimeout
 	}
-	return "", io.EOF
 }

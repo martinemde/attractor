@@ -98,7 +98,11 @@ func DefaultRegistryWithInterviewer(interviewer Interviewer) *HandlerRegistry {
 	r.Register("conditional", &ConditionalHandler{})
 
 	// Register parallel handler for shape=component
-	r.Register("parallel", &ParallelHandler{})
+	// Note: The registry reference is set after creation to avoid circular dependency
+	parallelHandler := NewParallelHandler(nil)
+	r.Register("parallel", parallelHandler)
+	// Set registry after registration to allow parallel branches to resolve handlers
+	parallelHandler.Registry = r
 
 	// Register fan-in handler for shape=tripleoctagon
 	r.Register("parallel.fan_in", &FanInHandler{})

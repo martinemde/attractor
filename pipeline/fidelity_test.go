@@ -166,6 +166,46 @@ func TestResolveThread_EmptyThreadIDIgnored(t *testing.T) {
 	assert.Equal(t, "graph-thread", result)
 }
 
+func TestResolveThread_SubgraphClassFourthPrecedence(t *testing.T) {
+	// Node with class derived from subgraph, no thread_id or default_thread
+	node := newNode("B", strAttr("class", "loop-a"))
+	graph := newTestGraph(nil, nil, nil)
+
+	result := ResolveThread(nil, node, graph, "previous-node")
+
+	assert.Equal(t, "loop-a", result)
+}
+
+func TestResolveThread_SubgraphClassMultiple(t *testing.T) {
+	// When node has multiple classes, use the first one
+	node := newNode("B", strAttr("class", "loop-a,critical"))
+	graph := newTestGraph(nil, nil, nil)
+
+	result := ResolveThread(nil, node, graph, "previous-node")
+
+	assert.Equal(t, "loop-a", result)
+}
+
+func TestResolveThread_GraphDefaultOverridesClass(t *testing.T) {
+	// Graph default_thread takes precedence over class (step 3 > step 4)
+	node := newNode("B", strAttr("class", "loop-a"))
+	graph := newTestGraph(nil, nil, []dotparser.Attr{strAttr("default_thread", "graph-thread")})
+
+	result := ResolveThread(nil, node, graph, "previous-node")
+
+	assert.Equal(t, "graph-thread", result)
+}
+
+func TestResolveThread_FallbackOverEmptyClass(t *testing.T) {
+	// Empty class should fall through to previousNodeID
+	node := newNode("B", strAttr("class", ""))
+	graph := newTestGraph(nil, nil, nil)
+
+	result := ResolveThread(nil, node, graph, "previous-node")
+
+	assert.Equal(t, "previous-node", result)
+}
+
 func TestFidelityModeConstants(t *testing.T) {
 	// Verify the constants have expected values
 	assert.Equal(t, FidelityMode("full"), FidelityFull)

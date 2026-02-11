@@ -67,6 +67,7 @@ var BuiltInRules = []LintRule{
 	&StartNoIncomingRule{},
 	&ExitNoOutgoingRule{},
 	&ConditionSyntaxRule{},
+	&StylesheetSyntaxRule{},
 	&TypeKnownRule{},
 	&FidelityValidRule{},
 	&RetryTargetExistsRule{},
@@ -381,6 +382,29 @@ func validateConditionSyntax(condition string) error {
 			}
 		}
 		// Bare keys (no operator) are allowed
+	}
+
+	return nil
+}
+
+// StylesheetSyntaxRule checks that model_stylesheet graph attributes parse correctly.
+type StylesheetSyntaxRule struct{}
+
+func (r *StylesheetSyntaxRule) Name() string { return "stylesheet_syntax" }
+
+func (r *StylesheetSyntaxRule) Apply(graph *dotparser.Graph) []Diagnostic {
+	attr, ok := graph.GraphAttr("model_stylesheet")
+	if !ok || attr.Str == "" {
+		return nil
+	}
+
+	if _, err := ParseStylesheet(attr.Str); err != nil {
+		return []Diagnostic{{
+			Rule:     r.Name(),
+			Severity: SeverityError,
+			Message:  fmt.Sprintf("invalid model_stylesheet: %v", err),
+			Fix:      "fix the stylesheet syntax",
+		}}
 	}
 
 	return nil

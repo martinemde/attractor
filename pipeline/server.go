@@ -1,10 +1,13 @@
 package pipeline
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -91,6 +94,9 @@ func (s *PipelineServer) Handler() http.Handler {
 
 	// GET /pipelines/{id}/context - Get current context
 	mux.HandleFunc("GET /pipelines/{id}/context", s.handleGetContext)
+
+	// GET /pipelines/{id}/graph - Get rendered graph visualization (SVG)
+	mux.HandleFunc("GET /pipelines/{id}/graph", s.handleGetGraph)
 
 	return mux
 }
@@ -514,4 +520,143 @@ func (i *serverInterviewer) Ask(question *Question) (*Answer, error) {
 	// No timeout, wait indefinitely
 	answer := <-pending.AnswerCh
 	return answer, nil
+}
+
+// handleGetGraph handles GET /pipelines/{id}/graph.
+// Returns an SVG representation of the pipeline graph if Graphviz is available,
+// otherwise falls back to returning the DOT source.
+func (s *PipelineServer) handleGetGraph(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	s.mu.RLock()
+	pipeline, ok := s.pipelines[id]
+	s.mu.RUnlock()
+
+	if !ok {
+		http.Error(w, "pipeline not found", http.StatusNotFound)
+		return
+	}
+
+	// Generate DOT source from the graph
+	dotSource := graphToDOT(pipeline.Graph)
+
+	// Try to render SVG using Graphviz dot command
+	svg, err := renderDOTtoSVG(dotSource)
+	if err == nil {
+		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Write(svg)
+		return
+	}
+
+	// Fallback: return DOT source with appropriate content type
+	w.Header().Set("Content-Type", "text/vnd.graphviz")
+	io.WriteString(w, dotSource)
+}
+
+// graphToDOT serializes a Graph back to DOT format.
+func graphToDOT(g *dotparser.Graph) string {
+	var sb strings.Builder
+
+	// Write graph header
+	sb.WriteString("digraph ")
+	if g.Name != "" {
+		sb.WriteString(g.Name)
+		sb.WriteString(" ")
+	}
+	sb.WriteString("{\n")
+
+	// Write graph attributes
+	if len(g.GraphAttrs) > 0 {
+		sb.WriteString("    graph [")
+		for i, attr := range g.GraphAttrs {
+			if i > 0 {
+				sb.WriteString(", ")
+			}
+			sb.WriteString(attr.Key)
+			sb.WriteString("=")
+			sb.WriteString(formatDOTValue(attr.Value))
+		}
+		sb.WriteString("]\n")
+	}
+
+	// Write nodes
+	for _, node := range g.Nodes {
+		sb.WriteString("    ")
+		sb.WriteString(node.ID)
+		if len(node.Attrs) > 0 {
+			sb.WriteString(" [")
+			for i, attr := range node.Attrs {
+				if i > 0 {
+					sb.WriteString(", ")
+				}
+				sb.WriteString(attr.Key)
+				sb.WriteString("=")
+				sb.WriteString(formatDOTValue(attr.Value))
+			}
+			sb.WriteString("]")
+		}
+		sb.WriteString("\n")
+	}
+
+	// Write edges
+	for _, edge := range g.Edges {
+		sb.WriteString("    ")
+		sb.WriteString(edge.From)
+		sb.WriteString(" -> ")
+		sb.WriteString(edge.To)
+		if len(edge.Attrs) > 0 {
+			sb.WriteString(" [")
+			for i, attr := range edge.Attrs {
+				if i > 0 {
+					sb.WriteString(", ")
+				}
+				sb.WriteString(attr.Key)
+				sb.WriteString("=")
+				sb.WriteString(formatDOTValue(attr.Value))
+			}
+			sb.WriteString("]")
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("}\n")
+	return sb.String()
+}
+
+// formatDOTValue formats a Value for DOT output, quoting strings as needed.
+func formatDOTValue(v dotparser.Value) string {
+	// If we have the raw representation, use it
+	if v.Raw != "" {
+		return v.Raw
+	}
+	// Otherwise format based on kind
+	switch v.Kind {
+	case dotparser.ValueString:
+		return fmt.Sprintf("%q", v.Str)
+	case dotparser.ValueInt:
+		return fmt.Sprintf("%d", v.Int)
+	case dotparser.ValueFloat:
+		return fmt.Sprintf("%g", v.Float)
+	case dotparser.ValueBool:
+		if v.Bool {
+			return "true"
+		}
+		return "false"
+	case dotparser.ValueDuration:
+		return fmt.Sprintf("%q", v.Duration.String())
+	default:
+		return fmt.Sprintf("%q", v.Str)
+	}
+}
+
+// renderDOTtoSVG attempts to render DOT source to SVG using the Graphviz dot command.
+func renderDOTtoSVG(dotSource string) ([]byte, error) {
+	cmd := exec.Command("dot", "-Tsvg")
+	cmd.Stdin = strings.NewReader(dotSource)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
 }

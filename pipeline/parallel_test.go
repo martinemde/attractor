@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -754,4 +755,534 @@ func TestRegistryResolvesParallelByType(t *testing.T) {
 	assert.NotNil(t, handler)
 	_, ok = handler.(*FanInHandler)
 	assert.True(t, ok, "should resolve to FanInHandler")
+}
+
+// trackingHandler is a test handler that tracks execution via context
+type trackingHandler struct{}
+
+func (h *trackingHandler) Execute(node *dotparser.Node, ctx *Context, graph *dotparser.Graph, logsRoot string) (*Outcome, error) {
+	ctx.Set("executed_"+node.ID, true)
+	return Success().WithNotes("tracking handler executed " + node.ID), nil
+}
+
+func TestParallelHandler_UsesRegistryForBranchHandlers(t *testing.T) {
+	// Create a custom registry with a tracking handler
+	registry := NewHandlerRegistry()
+	trackHandler := &trackingHandler{}
+	registry.Register("codergen", trackHandler)
+	registry.SetDefaultHandler(trackHandler)
+
+	// Create parallel handler with registry
+	handler := NewParallelHandler(registry)
+
+	parallelNode := newNode("parallel", strAttr("shape", "component"))
+	branchA := newNode("branchA", strAttr("shape", "box")) // shape=box resolves to codergen
+	branchB := newNode("branchB", strAttr("shape", "box"))
+
+	graph := newTestGraph(
+		[]*dotparser.Node{parallelNode, branchA, branchB},
+		[]*dotparser.Edge{
+			newEdge("parallel", "branchA"),
+			newEdge("parallel", "branchB"),
+		},
+		nil,
+	)
+
+	ctx := NewContext()
+	outcome, err := handler.Execute(parallelNode, ctx, graph, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusSuccess, outcome.Status)
+
+	// Verify the tracking handler was called for each branch
+	// Note: branches execute in their own cloned contexts, but results are stored in parent
+	resultsRaw, ok := ctx.Get("parallel.results")
+	require.True(t, ok, "parallel.results should be set")
+
+	results, err := DeserializeBranchResults(resultsRaw.(string))
+	require.NoError(t, err)
+	assert.Len(t, results, 2)
+
+	// Both branches should have succeeded via the tracking handler
+	for _, r := range results {
+		assert.Equal(t, StatusSuccess, r.Outcome.Status)
+		assert.Contains(t, r.Outcome.Notes, "tracking handler executed")
+	}
+}
+
+func TestParallelHandler_TestOutcomeTakesPrecedenceOverRegistry(t *testing.T) {
+	// Even with a registry, test_outcome should take precedence
+	registry := NewHandlerRegistry()
+	trackHandler := &trackingHandler{}
+	registry.SetDefaultHandler(trackHandler)
+
+	handler := NewParallelHandler(registry)
+
+	parallelNode := newNode("parallel", strAttr("shape", "component"))
+	// This branch has test_outcome set, so it should use that instead of resolving handler
+	branchA := newNode("branchA",
+		strAttr("test_outcome", "fail"),
+		strAttr("test_failure_reason", "intentional test failure"),
+	)
+
+	graph := newTestGraph(
+		[]*dotparser.Node{parallelNode, branchA},
+		[]*dotparser.Edge{
+			newEdge("parallel", "branchA"),
+		},
+		nil,
+	)
+
+	ctx := NewContext()
+	outcome, err := handler.Execute(parallelNode, ctx, graph, "")
+
+	require.NoError(t, err)
+	// Should be partial success because wait_all with 1 fail = partial
+	assert.Equal(t, StatusPartialSuccess, outcome.Status)
+
+	// Verify the branch used test_outcome, not the handler
+	resultsRaw, _ := ctx.Get("parallel.results")
+	results, _ := DeserializeBranchResults(resultsRaw.(string))
+	require.Len(t, results, 1)
+	assert.Equal(t, StatusFail, results[0].Outcome.Status)
+	assert.Equal(t, "intentional test failure", results[0].Outcome.FailureReason)
+}
+
+func TestParallelHandler_NilRegistryFallsBackToSuccess(t *testing.T) {
+	// With nil registry and no test_outcome, should fallback to success
+	handler := NewParallelHandler(nil)
+
+	parallelNode := newNode("parallel", strAttr("shape", "component"))
+	branchA := newNode("branchA") // No test_outcome, no shape
+
+	graph := newTestGraph(
+		[]*dotparser.Node{parallelNode, branchA},
+		[]*dotparser.Edge{
+			newEdge("parallel", "branchA"),
+		},
+		nil,
+	)
+
+	ctx := NewContext()
+	outcome, err := handler.Execute(parallelNode, ctx, graph, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusSuccess, outcome.Status)
+
+	// Verify the branch returned fallback success
+	resultsRaw, _ := ctx.Get("parallel.results")
+	results, _ := DeserializeBranchResults(resultsRaw.(string))
+	require.Len(t, results, 1)
+	assert.Equal(t, StatusSuccess, results[0].Outcome.Status)
+	assert.Contains(t, results[0].Outcome.Notes, "no handler")
+}
+
+func TestParallelHandler_RegistryHandlerError(t *testing.T) {
+	// Test that handler errors are captured as failures
+	registry := NewHandlerRegistry()
+	errorHandler := &erroringHandler{}
+	registry.SetDefaultHandler(errorHandler)
+
+	handler := NewParallelHandler(registry)
+
+	parallelNode := newNode("parallel", strAttr("shape", "component"))
+	branchA := newNode("branchA")
+
+	graph := newTestGraph(
+		[]*dotparser.Node{parallelNode, branchA},
+		[]*dotparser.Edge{
+			newEdge("parallel", "branchA"),
+		},
+		nil,
+	)
+
+	ctx := NewContext()
+	outcome, err := handler.Execute(parallelNode, ctx, graph, "")
+
+	require.NoError(t, err)
+	// Should be partial success because the branch failed
+	assert.Equal(t, StatusPartialSuccess, outcome.Status)
+
+	// Verify the error was captured
+	resultsRaw, _ := ctx.Get("parallel.results")
+	results, _ := DeserializeBranchResults(resultsRaw.(string))
+	require.Len(t, results, 1)
+	assert.Equal(t, StatusFail, results[0].Outcome.Status)
+	assert.Contains(t, results[0].Outcome.FailureReason, "handler error")
+}
+
+// erroringHandler is a test handler that returns an error
+type erroringHandler struct{}
+
+func (h *erroringHandler) Execute(node *dotparser.Node, ctx *Context, graph *dotparser.Graph, logsRoot string) (*Outcome, error) {
+	return nil, assert.AnError
+}
+
+func TestDefaultRegistry_ParallelHandlerHasRegistry(t *testing.T) {
+	// Verify that the default registry configures ParallelHandler with a registry reference
+	registry := DefaultRegistry()
+
+	parallelNode := newNode("parallel", strAttr("shape", "component"))
+	handler := registry.Resolve(parallelNode)
+	require.NotNil(t, handler)
+
+	parallelHandler, ok := handler.(*ParallelHandler)
+	require.True(t, ok, "should resolve to ParallelHandler")
+
+	// The parallel handler should have a registry reference
+	assert.NotNil(t, parallelHandler.Registry, "ParallelHandler should have Registry set")
+	assert.Equal(t, registry, parallelHandler.Registry, "ParallelHandler.Registry should point to the same registry")
+}
+
+func TestNewParallelHandler(t *testing.T) {
+	// Test the constructor
+	registry := NewHandlerRegistry()
+	handler := NewParallelHandler(registry)
+
+	assert.NotNil(t, handler)
+	assert.Equal(t, registry, handler.Registry)
+
+	// Test with nil
+	nilHandler := NewParallelHandler(nil)
+	assert.NotNil(t, nilHandler)
+	assert.Nil(t, nilHandler.Registry)
+}
+
+// --- LLM-based Fan-In Evaluation Tests ---
+
+// MockFanInBackend is a test backend for FanInHandler LLM evaluation.
+type MockFanInBackend struct {
+	Calls    []MockFanInCall
+	Response any // string or *Outcome
+	Error    error
+}
+
+type MockFanInCall struct {
+	NodeID string
+	Prompt string
+}
+
+func (m *MockFanInBackend) Run(node *dotparser.Node, prompt string, ctx *Context) (any, error) {
+	m.Calls = append(m.Calls, MockFanInCall{NodeID: node.ID, Prompt: prompt})
+	if m.Error != nil {
+		return nil, m.Error
+	}
+	return m.Response, nil
+}
+
+func TestFanInHandler_LLMBasedSelection(t *testing.T) {
+	// LLM selects branchB even though branchA has same status (would be first by heuristic)
+	mockBackend := &MockFanInBackend{Response: "I choose branchB as the best candidate."}
+	handler := NewFanInHandler(mockBackend)
+
+	results := []*BranchResult{
+		{NodeID: "branchA", Outcome: Success().WithNotes("result A"), Index: 0},
+		{NodeID: "branchB", Outcome: Success().WithNotes("result B"), Index: 1},
+	}
+	resultsJSON, _ := json.Marshal(results)
+
+	ctx := NewContext()
+	ctx.Set("parallel.results", string(resultsJSON))
+
+	fanInNode := newNode("fanin",
+		strAttr("shape", "tripleoctagon"),
+		strAttr("prompt", "Select the best implementation"),
+	)
+	graph := newTestGraph([]*dotparser.Node{fanInNode}, nil, nil)
+
+	outcome, err := handler.Execute(fanInNode, ctx, graph, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusSuccess, outcome.Status)
+
+	// Verify LLM was called
+	require.Len(t, mockBackend.Calls, 1)
+	assert.Equal(t, "fanin", mockBackend.Calls[0].NodeID)
+	assert.Contains(t, mockBackend.Calls[0].Prompt, "Select the best implementation")
+	assert.Contains(t, mockBackend.Calls[0].Prompt, "branchA")
+	assert.Contains(t, mockBackend.Calls[0].Prompt, "branchB")
+
+	// LLM selected branchB
+	bestID, _ := ctx.Get("parallel.fan_in.best_id")
+	assert.Equal(t, "branchB", bestID)
+	assert.Contains(t, outcome.Notes, "branchB")
+}
+
+func TestFanInHandler_LLMSelectsByPositionalReference(t *testing.T) {
+	// LLM uses "candidate 2" format instead of node ID
+	mockBackend := &MockFanInBackend{Response: "After evaluation, candidate 2 is the best choice."}
+	handler := NewFanInHandler(mockBackend)
+
+	results := []*BranchResult{
+		{NodeID: "branch_alpha", Outcome: Success(), Index: 0},
+		{NodeID: "branch_beta", Outcome: Success(), Index: 1},
+	}
+	resultsJSON, _ := json.Marshal(results)
+
+	ctx := NewContext()
+	ctx.Set("parallel.results", string(resultsJSON))
+
+	fanInNode := newNode("fanin",
+		strAttr("shape", "tripleoctagon"),
+		strAttr("prompt", "Pick the best"),
+	)
+	graph := newTestGraph([]*dotparser.Node{fanInNode}, nil, nil)
+
+	outcome, err := handler.Execute(fanInNode, ctx, graph, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusSuccess, outcome.Status)
+
+	// LLM selected branch_beta via "candidate 2"
+	bestID, _ := ctx.Get("parallel.fan_in.best_id")
+	assert.Equal(t, "branch_beta", bestID)
+}
+
+func TestFanInHandler_FallsBackToHeuristicWhenNoPrompt(t *testing.T) {
+	mockBackend := &MockFanInBackend{Response: "This should not be called"}
+	handler := NewFanInHandler(mockBackend)
+
+	// branchZ has success, branchA has success - heuristic picks branchA (alphabetically)
+	results := []*BranchResult{
+		{NodeID: "branchZ", Outcome: Success(), Index: 0},
+		{NodeID: "branchA", Outcome: Success(), Index: 1},
+	}
+	resultsJSON, _ := json.Marshal(results)
+
+	ctx := NewContext()
+	ctx.Set("parallel.results", string(resultsJSON))
+
+	// No prompt attribute
+	fanInNode := newNode("fanin", strAttr("shape", "tripleoctagon"))
+	graph := newTestGraph([]*dotparser.Node{fanInNode}, nil, nil)
+
+	outcome, err := handler.Execute(fanInNode, ctx, graph, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusSuccess, outcome.Status)
+
+	// LLM should NOT have been called
+	assert.Len(t, mockBackend.Calls, 0)
+
+	// Heuristic selected branchA (alphabetically first among successes)
+	bestID, _ := ctx.Get("parallel.fan_in.best_id")
+	assert.Equal(t, "branchA", bestID)
+}
+
+func TestFanInHandler_FallsBackToHeuristicWhenNoBackend(t *testing.T) {
+	// Handler with nil backend (heuristic-only mode)
+	handler := NewFanInHandler(nil)
+
+	results := []*BranchResult{
+		{NodeID: "branchZ", Outcome: Success(), Index: 0},
+		{NodeID: "branchA", Outcome: Success(), Index: 1},
+	}
+	resultsJSON, _ := json.Marshal(results)
+
+	ctx := NewContext()
+	ctx.Set("parallel.results", string(resultsJSON))
+
+	// Has prompt but no backend
+	fanInNode := newNode("fanin",
+		strAttr("shape", "tripleoctagon"),
+		strAttr("prompt", "Select best"),
+	)
+	graph := newTestGraph([]*dotparser.Node{fanInNode}, nil, nil)
+
+	outcome, err := handler.Execute(fanInNode, ctx, graph, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusSuccess, outcome.Status)
+
+	// Heuristic selected branchA
+	bestID, _ := ctx.Get("parallel.fan_in.best_id")
+	assert.Equal(t, "branchA", bestID)
+}
+
+func TestFanInHandler_FallsBackToHeuristicOnLLMError(t *testing.T) {
+	mockBackend := &MockFanInBackend{Error: fmt.Errorf("LLM service unavailable")}
+	handler := NewFanInHandler(mockBackend)
+
+	results := []*BranchResult{
+		{NodeID: "branchZ", Outcome: Success(), Index: 0},
+		{NodeID: "branchA", Outcome: Success(), Index: 1},
+	}
+	resultsJSON, _ := json.Marshal(results)
+
+	ctx := NewContext()
+	ctx.Set("parallel.results", string(resultsJSON))
+
+	fanInNode := newNode("fanin",
+		strAttr("shape", "tripleoctagon"),
+		strAttr("prompt", "Select best"),
+	)
+	graph := newTestGraph([]*dotparser.Node{fanInNode}, nil, nil)
+
+	outcome, err := handler.Execute(fanInNode, ctx, graph, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusSuccess, outcome.Status)
+
+	// LLM was called but errored
+	require.Len(t, mockBackend.Calls, 1)
+
+	// Falls back to heuristic - branchA selected
+	bestID, _ := ctx.Get("parallel.fan_in.best_id")
+	assert.Equal(t, "branchA", bestID)
+}
+
+func TestFanInHandler_FallsBackToHeuristicOnUnparseableResponse(t *testing.T) {
+	// LLM returns gibberish that can't be parsed
+	mockBackend := &MockFanInBackend{Response: "I have no idea what to pick!"}
+	handler := NewFanInHandler(mockBackend)
+
+	results := []*BranchResult{
+		{NodeID: "branchZ", Outcome: Success(), Index: 0},
+		{NodeID: "branchA", Outcome: Success(), Index: 1},
+	}
+	resultsJSON, _ := json.Marshal(results)
+
+	ctx := NewContext()
+	ctx.Set("parallel.results", string(resultsJSON))
+
+	fanInNode := newNode("fanin",
+		strAttr("shape", "tripleoctagon"),
+		strAttr("prompt", "Select best"),
+	)
+	graph := newTestGraph([]*dotparser.Node{fanInNode}, nil, nil)
+
+	outcome, err := handler.Execute(fanInNode, ctx, graph, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusSuccess, outcome.Status)
+
+	// Falls back to heuristic - branchA selected
+	bestID, _ := ctx.Get("parallel.fan_in.best_id")
+	assert.Equal(t, "branchA", bestID)
+}
+
+func TestFanInHandler_LLMReceivesFormattedCandidates(t *testing.T) {
+	mockBackend := &MockFanInBackend{Response: "branchA"}
+	handler := NewFanInHandler(mockBackend)
+
+	results := []*BranchResult{
+		{NodeID: "branchA", Outcome: Success().WithNotes("Completed successfully"), Index: 0},
+		{NodeID: "branchB", Outcome: PartialSuccess("Partial notes"), Index: 1},
+		{NodeID: "branchC", Outcome: Fail("Something went wrong"), Index: 2},
+	}
+	resultsJSON, _ := json.Marshal(results)
+
+	ctx := NewContext()
+	ctx.Set("parallel.results", string(resultsJSON))
+
+	fanInNode := newNode("fanin",
+		strAttr("shape", "tripleoctagon"),
+		strAttr("prompt", "Evaluate the candidates"),
+	)
+	graph := newTestGraph([]*dotparser.Node{fanInNode}, nil, nil)
+
+	_, err := handler.Execute(fanInNode, ctx, graph, "")
+	require.NoError(t, err)
+
+	// Verify the prompt sent to LLM contains formatted candidate info
+	require.Len(t, mockBackend.Calls, 1)
+	prompt := mockBackend.Calls[0].Prompt
+
+	// Check user prompt is included
+	assert.Contains(t, prompt, "Evaluate the candidates")
+
+	// Check all candidates are listed
+	assert.Contains(t, prompt, "branchA")
+	assert.Contains(t, prompt, "branchB")
+	assert.Contains(t, prompt, "branchC")
+
+	// Check status information is included (lowercase as returned by Status.String())
+	assert.Contains(t, prompt, "success")
+	assert.Contains(t, prompt, "partial_success")
+	assert.Contains(t, prompt, "fail")
+
+	// Check notes are included
+	assert.Contains(t, prompt, "Completed successfully")
+	assert.Contains(t, prompt, "Partial notes")
+
+	// Check failure reason is included
+	assert.Contains(t, prompt, "Something went wrong")
+}
+
+func TestFanInHandler_LLMBackendReturnsOutcome(t *testing.T) {
+	// Backend returns an *Outcome with selected_id in context updates
+	customOutcome := Success().
+		WithNotes("branchB is better").
+		WithContextUpdate("selected_id", "branchB")
+	mockBackend := &MockFanInBackend{Response: customOutcome}
+	handler := NewFanInHandler(mockBackend)
+
+	results := []*BranchResult{
+		{NodeID: "branchA", Outcome: Success(), Index: 0},
+		{NodeID: "branchB", Outcome: Success(), Index: 1},
+	}
+	resultsJSON, _ := json.Marshal(results)
+
+	ctx := NewContext()
+	ctx.Set("parallel.results", string(resultsJSON))
+
+	fanInNode := newNode("fanin",
+		strAttr("shape", "tripleoctagon"),
+		strAttr("prompt", "Select best"),
+	)
+	graph := newTestGraph([]*dotparser.Node{fanInNode}, nil, nil)
+
+	outcome, err := handler.Execute(fanInNode, ctx, graph, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusSuccess, outcome.Status)
+
+	// Should select branchB via context update
+	bestID, _ := ctx.Get("parallel.fan_in.best_id")
+	assert.Equal(t, "branchB", bestID)
+}
+
+func TestFanInHandler_LLMBackendReturnsFailedOutcome(t *testing.T) {
+	// Backend returns a failed *Outcome - should fall back to heuristic
+	failedOutcome := Fail("LLM couldn't decide")
+	mockBackend := &MockFanInBackend{Response: failedOutcome}
+	handler := NewFanInHandler(mockBackend)
+
+	results := []*BranchResult{
+		{NodeID: "branchZ", Outcome: Success(), Index: 0},
+		{NodeID: "branchA", Outcome: Success(), Index: 1},
+	}
+	resultsJSON, _ := json.Marshal(results)
+
+	ctx := NewContext()
+	ctx.Set("parallel.results", string(resultsJSON))
+
+	fanInNode := newNode("fanin",
+		strAttr("shape", "tripleoctagon"),
+		strAttr("prompt", "Select best"),
+	)
+	graph := newTestGraph([]*dotparser.Node{fanInNode}, nil, nil)
+
+	outcome, err := handler.Execute(fanInNode, ctx, graph, "")
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusSuccess, outcome.Status)
+
+	// Falls back to heuristic - branchA selected
+	bestID, _ := ctx.Get("parallel.fan_in.best_id")
+	assert.Equal(t, "branchA", bestID)
+}
+
+func TestNewFanInHandler(t *testing.T) {
+	// Test constructor
+	mockBackend := &MockFanInBackend{}
+	handler := NewFanInHandler(mockBackend)
+
+	assert.NotNil(t, handler)
+	assert.Equal(t, mockBackend, handler.Backend)
+
+	// Test with nil
+	nilHandler := NewFanInHandler(nil)
+	assert.NotNil(t, nilHandler)
+	assert.Nil(t, nilHandler.Backend)
 }

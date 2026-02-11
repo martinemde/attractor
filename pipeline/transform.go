@@ -57,3 +57,17 @@ func ApplyTransforms(graph *dotparser.Graph, transforms []Transform) *dotparser.
 	}
 	return graph
 }
+
+// DefaultTransforms returns the standard transforms that are automatically
+// applied to every pipeline execution. Per attractor-spec.md Section 8.5,
+// the stylesheet is applied as a transform after parsing and before validation.
+// Variable expansion is applied after stylesheet for $goal substitution.
+//
+// Order matters: StylesheetTransform runs first to populate node attributes,
+// then VariableExpansionTransform expands $goal in prompt attributes.
+func DefaultTransforms() []Transform {
+	return []Transform{
+		&StylesheetTransform{},
+		&VariableExpansionTransform{},
+	}
+}

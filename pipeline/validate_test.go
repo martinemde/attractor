@@ -1035,6 +1035,70 @@ func TestIsCodergenNode(t *testing.T) {
 	}
 }
 
+// ---------- stylesheet_syntax rule tests ----------
+
+func TestStylesheetSyntaxRule_ValidStylesheet(t *testing.T) {
+	graph := &dotparser.Graph{
+		Name: "ValidStylesheet",
+		GraphAttrs: []dotparser.Attr{
+			{Key: "model_stylesheet", Value: dotparser.Value{Kind: dotparser.ValueString, Str: `* { llm_model: "claude-sonnet-4-20250514" }`}},
+		},
+		Nodes: []*dotparser.Node{
+			{ID: "start", Attrs: []dotparser.Attr{{Key: "shape", Value: dotparser.Value{Kind: dotparser.ValueString, Str: "Mdiamond"}}}},
+			{ID: "exit", Attrs: []dotparser.Attr{{Key: "shape", Value: dotparser.Value{Kind: dotparser.ValueString, Str: "Msquare"}}}},
+		},
+		Edges: []*dotparser.Edge{
+			{From: "start", To: "exit"},
+		},
+	}
+
+	rule := &StylesheetSyntaxRule{}
+	diagnostics := rule.Apply(graph)
+
+	if len(diagnostics) != 0 {
+		t.Errorf("expected no diagnostics for valid stylesheet, got %d: %v", len(diagnostics), diagnostics)
+	}
+}
+
+func TestStylesheetSyntaxRule_InvalidStylesheet(t *testing.T) {
+	graph := &dotparser.Graph{
+		Name: "InvalidStylesheet",
+		GraphAttrs: []dotparser.Attr{
+			{Key: "model_stylesheet", Value: dotparser.Value{Kind: dotparser.ValueString, Str: `this is not valid { {`}},
+		},
+		Nodes: []*dotparser.Node{
+			{ID: "start", Attrs: []dotparser.Attr{{Key: "shape", Value: dotparser.Value{Kind: dotparser.ValueString, Str: "Mdiamond"}}}},
+			{ID: "exit", Attrs: []dotparser.Attr{{Key: "shape", Value: dotparser.Value{Kind: dotparser.ValueString, Str: "Msquare"}}}},
+		},
+		Edges: []*dotparser.Edge{
+			{From: "start", To: "exit"},
+		},
+	}
+
+	rule := &StylesheetSyntaxRule{}
+	diagnostics := rule.Apply(graph)
+
+	if len(diagnostics) != 1 {
+		t.Fatalf("expected 1 diagnostic, got %d", len(diagnostics))
+	}
+	if diagnostics[0].Rule != "stylesheet_syntax" {
+		t.Errorf("expected rule 'stylesheet_syntax', got %q", diagnostics[0].Rule)
+	}
+	if diagnostics[0].Severity != SeverityError {
+		t.Errorf("expected severity ERROR, got %v", diagnostics[0].Severity)
+	}
+}
+
+func TestStylesheetSyntaxRule_NoStylesheet(t *testing.T) {
+	graph := validGraph()
+	rule := &StylesheetSyntaxRule{}
+	diagnostics := rule.Apply(graph)
+
+	if len(diagnostics) != 0 {
+		t.Errorf("expected no diagnostics when no stylesheet, got %d: %v", len(diagnostics), diagnostics)
+	}
+}
+
 // ---------- Severity String tests ----------
 
 func TestSeverityString(t *testing.T) {
@@ -1098,6 +1162,7 @@ func TestBuiltInRules_AllPresent(t *testing.T) {
 		"start_no_incoming":   false,
 		"exit_no_outgoing":    false,
 		"condition_syntax":    false,
+		"stylesheet_syntax":   false,
 		"type_known":          false,
 		"fidelity_valid":      false,
 		"retry_target_exists": false,
