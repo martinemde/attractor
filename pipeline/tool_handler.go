@@ -25,10 +25,12 @@ func (h *ToolHandler) Execute(node *dotparser.Node, ctx *Context, graph *dotpars
 	}
 	command := toolCommandAttr.Str
 
-	// Determine timeout
+	// Determine timeout from string duration (e.g. timeout="900s")
 	timeout := DefaultToolTimeout
-	if timeoutAttr, ok := node.Attr("timeout"); ok && timeoutAttr.Kind == dotparser.ValueDuration {
-		timeout = timeoutAttr.Duration
+	if timeoutAttr, ok := node.Attr("timeout"); ok {
+		if d, err := time.ParseDuration(timeoutAttr.Str); err == nil {
+			timeout = d
+		}
 	}
 
 	// Create context with timeout

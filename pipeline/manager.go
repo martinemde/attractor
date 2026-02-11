@@ -142,11 +142,9 @@ func (h *ManagerLoopHandler) readConfig(node *dotparser.Node, graph *dotparser.G
 		config.ChildDotfile = attr.Str
 	}
 
-	// Read poll interval from node attributes
+	// Read poll interval from node attributes (e.g. manager.poll_interval="100ms")
 	if attr, ok := node.Attr("manager.poll_interval"); ok {
-		if attr.Kind == dotparser.ValueDuration {
-			config.PollInterval = attr.Duration
-		} else if d, err := time.ParseDuration(attr.Str); err == nil {
+		if d, err := time.ParseDuration(attr.Str); err == nil {
 			config.PollInterval = d
 		}
 	}

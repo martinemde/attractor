@@ -9,7 +9,6 @@ const (
 	TokenString      // "..." with escape processing
 	TokenInteger     // -?[0-9]+
 	TokenFloat       // -?[0-9]*.[0-9]+
-	TokenDuration    // [0-9]+(ms|s|m|h|d)
 	TokenArrow       // ->
 	TokenLBrace      // {
 	TokenRBrace      // }
@@ -36,7 +35,6 @@ var tokenNames = map[TokenKind]string{
 	TokenString:     "string",
 	TokenInteger:    "integer",
 	TokenFloat:      "float",
-	TokenDuration:   "duration",
 	TokenArrow:      "'->'",
 	TokenLBrace:     "'{'",
 	TokenRBrace:     "'}'",

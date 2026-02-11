@@ -144,22 +144,26 @@ func TestLexerFloats(t *testing.T) {
 	}
 }
 
-func TestLexerDurations(t *testing.T) {
+func TestLexerBareDurationIsIntegerThenIdentifier(t *testing.T) {
+	// Bare durations like "900s" are not valid DOT; they split into two tokens.
 	tests := []struct {
-		input   string
-		literal string
+		input     string
+		wantInt   string
+		wantIdent string
 	}{
-		{"900s", "900s"},
-		{"250ms", "250ms"},
-		{"15m", "15m"},
-		{"2h", "2h"},
-		{"1d", "1d"},
+		{"900s", "900", "s"},
+		{"250ms", "250", "ms"},
+		{"15m", "15", "m"},
+		{"2h", "2", "h"},
+		{"1d", "1", "d"},
 	}
 	for _, tt := range tests {
 		tokens := collectTokens(t, tt.input)
-		require.Len(t, tokens, 2, "input: %s", tt.input)
-		assert.Equal(t, TokenDuration, tokens[0].Kind, "input: %s", tt.input)
-		assert.Equal(t, tt.literal, tokens[0].Literal, "input: %s", tt.input)
+		require.Len(t, tokens, 3, "input: %s", tt.input) // integer, identifier, EOF
+		assert.Equal(t, TokenInteger, tokens[0].Kind, "input: %s", tt.input)
+		assert.Equal(t, tt.wantInt, tokens[0].Literal, "input: %s", tt.input)
+		assert.Equal(t, TokenIdentifier, tokens[1].Kind, "input: %s", tt.input)
+		assert.Equal(t, tt.wantIdent, tokens[1].Literal, "input: %s", tt.input)
 	}
 }
 
@@ -261,8 +265,8 @@ func TestLexerPeek(t *testing.T) {
 	assert.Equal(t, "B", tok4.Literal)
 }
 
-func TestLexerDurationNotConsumedWhenFollowedByAlpha(t *testing.T) {
-	// "5mm" should lex as integer "5" then identifier "mm", not duration "5m" + "m"
+func TestLexerNumberFollowedByAlpha(t *testing.T) {
+	// "5mm" should lex as integer "5" then identifier "mm"
 	tokens := collectTokens(t, "5mm")
 	require.Len(t, tokens, 3) // 5, mm, EOF
 	assert.Equal(t, TokenInteger, tokens[0].Kind)

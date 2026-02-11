@@ -16,7 +16,7 @@ digraph MultiStage {
 
     subgraph cluster_planning {
         label = "Planning"
-        node [timeout=300s]
+        node [timeout="300s"]
 
         gather_requirements [label="Gather Requirements", prompt="Analyze the requirements for: $goal"]
         design              [label="Design Architecture", prompt="Design the system architecture"]
@@ -24,7 +24,7 @@ digraph MultiStage {
 
     subgraph cluster_implementation {
         label = "Implementation"
-        node [timeout=900s]
+        node [timeout="900s"]
 
         implement       [label="Write Code", prompt="Implement the design", class="code", goal_gate=true, retry_target="implement"]
         write_tests     [label="Write Tests", prompt="Write comprehensive tests", class="code"]

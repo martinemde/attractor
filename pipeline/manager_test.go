@@ -140,7 +140,7 @@ func TestManagerLoopHandler_PollIntervalRespected(t *testing.T) {
 	node := newNode("manager")
 	node.Attrs = []dotparser.Attr{
 		{Key: "manager.max_cycles", Value: dotparser.Value{Kind: dotparser.ValueInt, Int: 3}},
-		{Key: "manager.poll_interval", Value: dotparser.Value{Kind: dotparser.ValueDuration, Duration: 100 * time.Millisecond}},
+		{Key: "manager.poll_interval", Value: dotparser.Value{Kind: dotparser.ValueString, Str: "100ms", Raw: "100ms"}},
 		{Key: "manager.actions", Value: dotparser.Value{Kind: dotparser.ValueString, Str: "observe,wait"}},
 	}
 
@@ -309,7 +309,7 @@ func TestManagerLoopHandler_StartChild_ParsesAndRunsChild(t *testing.T) {
 	node := newNode("manager")
 	node.Attrs = []dotparser.Attr{
 		{Key: "manager.max_cycles", Value: dotparser.Value{Kind: dotparser.ValueInt, Int: 50}},
-		{Key: "manager.poll_interval", Value: dotparser.Value{Kind: dotparser.ValueDuration, Duration: 10 * time.Millisecond}},
+		{Key: "manager.poll_interval", Value: dotparser.Value{Kind: dotparser.ValueString, Str: "10ms", Raw: "10ms"}},
 		{Key: "manager.actions", Value: dotparser.Value{Kind: dotparser.ValueString, Str: "observe,wait"}},
 	}
 

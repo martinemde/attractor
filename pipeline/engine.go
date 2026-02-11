@@ -456,8 +456,6 @@ func mirrorGraphAttributes(graph *dotparser.Graph, ctx *Context) {
 			ctx.Set(key, attr.Value.Float)
 		case dotparser.ValueBool:
 			ctx.Set(key, attr.Value.Bool)
-		case dotparser.ValueDuration:
-			ctx.Set(key, attr.Value.Duration)
 		default:
 			ctx.Set(key, attr.Value.Raw)
 		}

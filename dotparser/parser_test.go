@@ -2,7 +2,6 @@ package dotparser
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -73,7 +72,7 @@ func TestParseBranchingWorkflow(t *testing.T) {
 digraph Branch {
     graph [goal="Implement and validate a feature"]
     rankdir=LR
-    node [shape=box, timeout=900s]
+    node [shape=box, timeout="900s"]
 
     start     [shape=Mdiamond, label="Start"]
     exit      [shape=Msquare, label="Exit"]
@@ -182,9 +181,9 @@ func TestParseChainedEdges(t *testing.T) {
 func TestParseNodeDefaults(t *testing.T) {
 	src := `
 digraph D {
-    node [shape=box, timeout=900s]
+    node [shape=box, timeout="900s"]
     A [label="A"]
-    B [label="B", timeout=1800s]
+    B [label="B", timeout="1800s"]
 }
 `
 	g, err := Parse([]byte(src))
@@ -197,7 +196,8 @@ digraph D {
 	assert.Equal(t, "box", shape.Str)
 	timeout, ok := a.Attr("timeout")
 	assert.True(t, ok)
-	assert.Equal(t, 900*time.Second, timeout.Duration)
+	assert.Equal(t, ValueString, timeout.Kind)
+	assert.Equal(t, "900s", timeout.Str)
 
 	b := g.NodeByID("B")
 	require.NotNil(t, b)
@@ -206,7 +206,8 @@ digraph D {
 	assert.Equal(t, "box", shape.Str)
 	timeout, ok = b.Attr("timeout")
 	assert.True(t, ok)
-	assert.Equal(t, 1800*time.Second, timeout.Duration)
+	assert.Equal(t, ValueString, timeout.Kind)
+	assert.Equal(t, "1800s", timeout.Str)
 }
 
 func TestParseEdgeDefaults(t *testing.T) {
@@ -239,10 +240,10 @@ func TestParseSubgraphFlattening(t *testing.T) {
 digraph D {
     subgraph cluster_loop {
         label = "Loop A"
-        node [thread_id="loop-a", timeout=900s]
+        node [thread_id="loop-a", timeout="900s"]
 
         Plan      [label="Plan next step"]
-        Implement [label="Implement", timeout=1800s]
+        Implement [label="Implement", timeout="1800s"]
     }
 }
 `
@@ -259,7 +260,8 @@ digraph D {
 	assert.Equal(t, "loop-a", tid.Str)
 	timeout, ok := plan.Attr("timeout")
 	assert.True(t, ok)
-	assert.Equal(t, 900*time.Second, timeout.Duration)
+	assert.Equal(t, ValueString, timeout.Kind)
+	assert.Equal(t, "900s", timeout.Str)
 
 	impl := g.NodeByID("Implement")
 	require.NotNil(t, impl)
@@ -268,7 +270,8 @@ digraph D {
 	assert.Equal(t, "loop-a", tid.Str)
 	timeout, ok = impl.Attr("timeout")
 	assert.True(t, ok)
-	assert.Equal(t, 1800*time.Second, timeout.Duration)
+	assert.Equal(t, ValueString, timeout.Kind)
+	assert.Equal(t, "1800s", timeout.Str)
 
 	// Both should have derived class from subgraph label "Loop A" -> "loop-a"
 	planClass, ok := plan.Attr("class")
@@ -377,7 +380,7 @@ func TestParseStringEscapes(t *testing.T) {
 func TestParseValueTypes(t *testing.T) {
 	src := `
 digraph D {
-    A [max_retries=3, goal_gate=true, timeout=900s, weight=0.5, label="hello"]
+    A [max_retries=3, goal_gate=true, timeout="900s", weight=0.5, label="hello"]
 }
 `
 	g, err := Parse([]byte(src))
@@ -398,8 +401,8 @@ digraph D {
 
 	to, ok := n.Attr("timeout")
 	assert.True(t, ok)
-	assert.Equal(t, ValueDuration, to.Kind)
-	assert.Equal(t, 900*time.Second, to.Duration)
+	assert.Equal(t, ValueString, to.Kind)
+	assert.Equal(t, "900s", to.Str)
 
 	w, ok := n.Attr("weight")
 	assert.True(t, ok)
@@ -469,6 +472,12 @@ digraph test_pipeline {
 	gg, ok := impl.Attr("goal_gate")
 	assert.True(t, ok)
 	assert.True(t, gg.Bool)
+}
+
+func TestParseRejectsBareDuration(t *testing.T) {
+	// Bare durations like timeout=900s are invalid; use timeout="900s" instead.
+	_, err := Parse([]byte(`digraph D { A [timeout=900s] }`))
+	require.Error(t, err)
 }
 
 func TestParseRejectsUndirectedEdge(t *testing.T) {

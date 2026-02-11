@@ -2,7 +2,7 @@ digraph SpecConformance {
     graph [
         goal="Report on spec conformance between coding-agent-loop-spec.md and the agentloop implementation"
     ]
-    node [shape=box, timeout=900s]
+    node [shape=box, timeout="900s"]
 
     start  [shape=Mdiamond, label="Start"]
     exit   [shape=Msquare, label="Exit"]

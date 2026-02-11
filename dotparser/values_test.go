@@ -2,7 +2,6 @@ package dotparser
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -65,26 +64,6 @@ func TestParseValueBoolFalse(t *testing.T) {
 	assert.Equal(t, ValueBool, v.Kind)
 	assert.False(t, v.Bool)
 	assert.Equal(t, "false", v.Raw)
-}
-
-func TestParseValueDuration(t *testing.T) {
-	tests := []struct {
-		literal string
-		want    time.Duration
-	}{
-		{"900s", 900 * time.Second},
-		{"250ms", 250 * time.Millisecond},
-		{"15m", 15 * time.Minute},
-		{"2h", 2 * time.Hour},
-		{"1d", 24 * time.Hour},
-	}
-	for _, tt := range tests {
-		v, err := ParseValue(Token{Kind: TokenDuration, Literal: tt.literal})
-		require.NoError(t, err, "literal: %s", tt.literal)
-		assert.Equal(t, ValueDuration, v.Kind)
-		assert.Equal(t, tt.want, v.Duration)
-		assert.Equal(t, tt.literal, v.Raw)
-	}
 }
 
 func TestParseValueIdentifierAsString(t *testing.T) {

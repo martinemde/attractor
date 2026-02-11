@@ -251,48 +251,7 @@ func (l *Lexer) scanNumber() (Token, error) {
 		return Token{Kind: TokenFloat, Literal: literal, Pos: pos}, nil
 	}
 
-	// Check for duration suffix
-	if !l.atEnd() {
-		suffix := l.tryDurationSuffix()
-		if suffix != "" {
-			literal = string(l.src[start:l.pos])
-			return Token{Kind: TokenDuration, Literal: literal, Pos: pos}, nil
-		}
-	}
-
 	return Token{Kind: TokenInteger, Literal: literal, Pos: pos}, nil
-}
-
-// tryDurationSuffix attempts to consume a duration suffix (ms, s, m, h, d).
-// Returns the suffix string if consumed, empty string if not.
-func (l *Lexer) tryDurationSuffix() string {
-	if l.atEnd() {
-		return ""
-	}
-
-	ch := l.peek()
-
-	// Check "ms" (2-char suffix)
-	if ch == 'm' && l.pos+1 < len(l.src) && l.src[l.pos+1] == 's' {
-		// Ensure the char after "ms" is not alphanumeric
-		if l.pos+2 >= len(l.src) || !isIdentPart(l.src[l.pos+2]) {
-			l.advance() // m
-			l.advance() // s
-			return "ms"
-		}
-		return ""
-	}
-
-	// Check single-char suffixes: s, m, h, d
-	if ch == 's' || ch == 'm' || ch == 'h' || ch == 'd' {
-		// Ensure the char after the suffix is not alphanumeric
-		if l.pos+1 >= len(l.src) || !isIdentPart(l.src[l.pos+1]) {
-			l.advance()
-			return string(ch)
-		}
-	}
-
-	return ""
 }
 
 func (l *Lexer) scanIdentifier() (Token, error) {

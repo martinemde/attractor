@@ -1,7 +1,5 @@
 package dotparser
 
-import "time"
-
 // Position tracks a source location for error messages.
 type Position struct {
 	Line   int // 1-based line number
@@ -13,22 +11,20 @@ type Position struct {
 type ValueKind string
 
 const (
-	ValueString   ValueKind = "string"
-	ValueInt      ValueKind = "int"
-	ValueFloat    ValueKind = "float"
-	ValueBool     ValueKind = "bool"
-	ValueDuration ValueKind = "duration"
+	ValueString ValueKind = "string"
+	ValueInt    ValueKind = "int"
+	ValueFloat  ValueKind = "float"
+	ValueBool   ValueKind = "bool"
 )
 
 // Value is a parsed attribute value. Kind determines which typed field is populated.
 type Value struct {
-	Kind     ValueKind
-	Str      string        // populated when Kind == ValueString
-	Int      int64         // populated when Kind == ValueInt
-	Float    float64       // populated when Kind == ValueFloat
-	Bool     bool          // populated when Kind == ValueBool
-	Duration time.Duration // populated when Kind == ValueDuration
-	Raw      string        // original text representation, always set
+	Kind  ValueKind
+	Str   string  // populated when Kind == ValueString
+	Int   int64   // populated when Kind == ValueInt
+	Float float64 // populated when Kind == ValueFloat
+	Bool  bool    // populated when Kind == ValueBool
+	Raw   string  // original text representation, always set
 }
 
 // String returns the original text representation of the value.

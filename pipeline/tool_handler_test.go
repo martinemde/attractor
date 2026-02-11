@@ -89,7 +89,7 @@ func TestToolHandler_TimeoutStopsLongRunningCommand(t *testing.T) {
 	// Create a node with a short timeout and a long-running command
 	node := newNode("tool_test",
 		strAttr("tool_command", "sleep 10"),
-		durationAttr("timeout", 100*time.Millisecond),
+		strAttr("timeout", "100ms"),
 	)
 	graph := newTestGraph([]*dotparser.Node{node}, nil, nil)
 	ctx := NewContext()
@@ -103,6 +103,30 @@ func TestToolHandler_TimeoutStopsLongRunningCommand(t *testing.T) {
 	assert.Contains(t, outcome.FailureReason, "timed out")
 
 	// Verify it didn't wait the full 10 seconds
+	assert.Less(t, elapsed, 2*time.Second)
+}
+
+func TestToolHandler_TimeoutFromStringDuration(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Skipping timeout test on Windows")
+	}
+
+	handler := &ToolHandler{}
+	// Use a quoted string duration (e.g. timeout="100ms") instead of bare duration
+	node := newNode("tool_test",
+		strAttr("tool_command", "sleep 10"),
+		strAttr("timeout", "100ms"),
+	)
+	graph := newTestGraph([]*dotparser.Node{node}, nil, nil)
+	ctx := NewContext()
+
+	start := time.Now()
+	outcome, err := handler.Execute(node, ctx, graph, "")
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Equal(t, StatusFail, outcome.Status)
+	assert.Contains(t, outcome.FailureReason, "timed out")
 	assert.Less(t, elapsed, 2*time.Second)
 }
 
@@ -149,10 +173,3 @@ func TestToolHandler_RegisteredInDefaultRegistry(t *testing.T) {
 	assert.NotNil(t, shapeHandler)
 }
 
-// Helper to create duration attributes
-func durationAttr(key string, d time.Duration) dotparser.Attr {
-	return dotparser.Attr{
-		Key:   key,
-		Value: dotparser.Value{Kind: dotparser.ValueDuration, Duration: d, Raw: d.String()},
-	}
-}

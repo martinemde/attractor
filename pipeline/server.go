@@ -642,8 +642,6 @@ func formatDOTValue(v dotparser.Value) string {
 			return "true"
 		}
 		return "false"
-	case dotparser.ValueDuration:
-		return fmt.Sprintf("%q", v.Duration.String())
 	default:
 		return fmt.Sprintf("%q", v.Str)
 	}
