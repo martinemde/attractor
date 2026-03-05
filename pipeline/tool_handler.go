@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/martinemde/attractor/dotparser"
@@ -37,8 +38,13 @@ func (h *ToolHandler) Execute(node *dotparser.Node, ctx *Context, graph *dotpars
 	execCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	// Execute the command
+	// Execute the command in its own process group so the entire tree
+	// can be killed on timeout (sh -c spawns a child process).
 	cmd := exec.CommandContext(execCtx, "sh", "-c", command)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
