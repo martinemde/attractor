@@ -285,16 +285,12 @@ func (a *AnthropicBedrockAdapter) buildRequestBody(req Request) ([]byte, error) 
 	// Bedrock-specific: anthropic_version goes in the body, not a header
 	body["anthropic_version"] = "bedrock-2023-05-31"
 
-	// Allow override from provider options
+	// Apply Bedrock-specific overrides from provider options.
 	if bedrockOpts != nil {
 		if v, ok := bedrockOpts["anthropic_version"].(string); ok {
 			body["anthropic_version"] = v
 		}
-	}
-
-	// Bedrock supports TTL on cache checkpoints ("5m" or "1h").
-	// When cache_ttl is set, inject the TTL into all cache_control entries.
-	if bedrockOpts != nil {
+		// Bedrock supports TTL on cache checkpoints ("5m" or "1h").
 		if ttl, ok := bedrockOpts["cache_ttl"].(string); ok && ttl != "" {
 			injectCacheTTL(body, ttl)
 		}
@@ -303,43 +299,31 @@ func (a *AnthropicBedrockAdapter) buildRequestBody(req Request) ([]byte, error) 
 	return json.Marshal(body)
 }
 
+// setCacheTTL sets the TTL on all cache_control entries found in blocks.
+func setCacheTTL(blocks []interface{}, ttl string) {
+	for _, block := range blocks {
+		if m, ok := block.(map[string]interface{}); ok {
+			if cc, ok := m["cache_control"].(map[string]interface{}); ok {
+				cc["ttl"] = ttl
+			}
+		}
+	}
+}
+
 // injectCacheTTL adds a TTL value to all cache_control entries in the request body.
 // Bedrock supports "5m" (default) and "1h" TTLs for prompt cache checkpoints.
 func injectCacheTTL(body map[string]interface{}, ttl string) {
-	// Process system blocks
 	if system, ok := body["system"].([]interface{}); ok {
-		for _, block := range system {
-			if m, ok := block.(map[string]interface{}); ok {
-				if cc, ok := m["cache_control"].(map[string]interface{}); ok {
-					cc["ttl"] = ttl
-				}
-			}
-		}
+		setCacheTTL(system, ttl)
 	}
-
-	// Process tools
 	if tools, ok := body["tools"].([]interface{}); ok {
-		for _, tool := range tools {
-			if m, ok := tool.(map[string]interface{}); ok {
-				if cc, ok := m["cache_control"].(map[string]interface{}); ok {
-					cc["ttl"] = ttl
-				}
-			}
-		}
+		setCacheTTL(tools, ttl)
 	}
-
-	// Process messages
 	if messages, ok := body["messages"].([]interface{}); ok {
 		for _, msg := range messages {
 			if m, ok := msg.(map[string]interface{}); ok {
 				if content, ok := m["content"].([]interface{}); ok {
-					for _, block := range content {
-						if b, ok := block.(map[string]interface{}); ok {
-							if cc, ok := b["cache_control"].(map[string]interface{}); ok {
-								cc["ttl"] = ttl
-							}
-						}
-					}
+					setCacheTTL(content, ttl)
 				}
 			}
 		}
