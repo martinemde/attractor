@@ -426,6 +426,219 @@ func TestAnthropicBedrockAdapterPromptCaching(t *testing.T) {
 	assert.Equal(t, 50, *resp.Usage.CacheWriteTokens)
 }
 
+func TestAnthropicBedrockAdapterPromptCachingFromBedrockOptions(t *testing.T) {
+	var capturedBody map[string]interface{}
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &capturedBody)
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id": "msg_pco", "model": "anthropic.claude-opus-4-6-v1:0",
+			"content":     []interface{}{map[string]interface{}{"type": "text", "text": "ok"}},
+			"stop_reason": "end_turn",
+			"usage":       map[string]interface{}{"input_tokens": float64(10), "output_tokens": float64(5)},
+		})
+	}
+
+	adapter, server := newTestBedrockAdapter(t, handler)
+	defer server.Close()
+
+	// Disable auto_cache via anthropic_bedrock provider options
+	_, err := adapter.Complete(context.Background(), Request{
+		Model: "anthropic.claude-opus-4-6-v1:0",
+		Messages: []Message{
+			SystemMessage("System prompt"),
+			UserMessage("First"),
+			AssistantMessage("Response"),
+			UserMessage("Second"),
+		},
+		ToolDefs: []ToolDefinition{
+			{Name: "my_tool", Description: "A tool", Parameters: map[string]interface{}{"type": "object"}},
+		},
+		ProviderOptions: map[string]interface{}{
+			"anthropic_bedrock": map[string]interface{}{
+				"auto_cache": false,
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	// cache_control should NOT be present when auto_cache is false
+	system := capturedBody["system"].([]interface{})
+	lastSystem := system[len(system)-1].(map[string]interface{})
+	assert.Nil(t, lastSystem["cache_control"])
+
+	tools := capturedBody["tools"].([]interface{})
+	lastTool := tools[len(tools)-1].(map[string]interface{})
+	assert.Nil(t, lastTool["cache_control"])
+}
+
+func TestAnthropicBedrockAdapterPromptCachingWithTTL(t *testing.T) {
+	var capturedBody map[string]interface{}
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &capturedBody)
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id": "msg_ttl", "model": "anthropic.claude-opus-4-6-v1:0",
+			"content":     []interface{}{map[string]interface{}{"type": "text", "text": "ok"}},
+			"stop_reason": "end_turn",
+			"usage": map[string]interface{}{
+				"input_tokens":               float64(10),
+				"output_tokens":              float64(5),
+				"cache_read_input_tokens":    float64(200),
+				"cache_creation_input_tokens": float64(0),
+			},
+		})
+	}
+
+	adapter, server := newTestBedrockAdapter(t, handler)
+	defer server.Close()
+
+	resp, err := adapter.Complete(context.Background(), Request{
+		Model: "anthropic.claude-opus-4-6-v1:0",
+		Messages: []Message{
+			SystemMessage("System prompt"),
+			UserMessage("First"),
+			AssistantMessage("Response"),
+			UserMessage("Second"),
+		},
+		ToolDefs: []ToolDefinition{
+			{Name: "my_tool", Description: "A tool", Parameters: map[string]interface{}{"type": "object"}},
+		},
+		ProviderOptions: map[string]interface{}{
+			"anthropic_bedrock": map[string]interface{}{
+				"cache_ttl": "1h",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	// Verify cache_control includes TTL on system blocks
+	system := capturedBody["system"].([]interface{})
+	lastSystem := system[len(system)-1].(map[string]interface{})
+	cc := lastSystem["cache_control"].(map[string]interface{})
+	assert.Equal(t, "ephemeral", cc["type"])
+	assert.Equal(t, "1h", cc["ttl"])
+
+	// Verify cache_control includes TTL on tools
+	tools := capturedBody["tools"].([]interface{})
+	lastTool := tools[len(tools)-1].(map[string]interface{})
+	toolCC := lastTool["cache_control"].(map[string]interface{})
+	assert.Equal(t, "ephemeral", toolCC["type"])
+	assert.Equal(t, "1h", toolCC["ttl"])
+
+	// Verify cache_control includes TTL on messages when second-to-last is user.
+	// In this test the second-to-last message after merge is assistant, so
+	// cache_control is only set on system and tools. Verify no panic occurs
+	// and that the message structure is intact.
+	messages := capturedBody["messages"].([]interface{})
+	require.GreaterOrEqual(t, len(messages), 2)
+
+	// Verify cache usage parsed
+	require.NotNil(t, resp.Usage.CacheReadTokens)
+	assert.Equal(t, 200, *resp.Usage.CacheReadTokens)
+}
+
+func TestAnthropicBedrockAdapterPromptCachingWithTTLOnMessages(t *testing.T) {
+	var capturedBody map[string]interface{}
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		json.Unmarshal(body, &capturedBody)
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id": "msg_ttlm", "model": "anthropic.claude-opus-4-6-v1:0",
+			"content":     []interface{}{map[string]interface{}{"type": "text", "text": "ok"}},
+			"stop_reason": "end_turn",
+			"usage":       map[string]interface{}{"input_tokens": float64(10), "output_tokens": float64(5)},
+		})
+	}
+
+	adapter, server := newTestBedrockAdapter(t, handler)
+	defer server.Close()
+
+	// Arrange messages so second-to-last after merge is a user message:
+	// [user, assistant, user, assistant] => second-to-last is messages[2] = user
+	_, err := adapter.Complete(context.Background(), Request{
+		Model: "anthropic.claude-opus-4-6-v1:0",
+		Messages: []Message{
+			UserMessage("First"),
+			AssistantMessage("Response1"),
+			UserMessage("Second"),
+			AssistantMessage("Response2"),
+		},
+		ProviderOptions: map[string]interface{}{
+			"anthropic_bedrock": map[string]interface{}{
+				"cache_ttl": "1h",
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	// After merge: [user, assistant, user, assistant] len=4
+	// second-to-last = messages[2] = user => cache_control applied with TTL
+	messages := capturedBody["messages"].([]interface{})
+	require.Len(t, messages, 4)
+	secondToLast := messages[2].(map[string]interface{})
+	assert.Equal(t, "user", secondToLast["role"])
+	content := secondToLast["content"].([]interface{})
+	lastContent := content[len(content)-1].(map[string]interface{})
+	msgCC := lastContent["cache_control"].(map[string]interface{})
+	assert.Equal(t, "ephemeral", msgCC["type"])
+	assert.Equal(t, "1h", msgCC["ttl"])
+}
+
+func TestAnthropicBedrockAdapterThinkingFromBedrockOptions(t *testing.T) {
+	handler := func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var reqBody map[string]interface{}
+		json.Unmarshal(body, &reqBody)
+
+		// Verify thinking passed through from anthropic_bedrock options
+		assert.NotNil(t, reqBody["thinking"])
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"id":    "msg_th2",
+			"model": "anthropic.claude-opus-4-6-v1:0",
+			"content": []interface{}{
+				map[string]interface{}{
+					"type":      "thinking",
+					"thinking":  "Reasoning...",
+					"signature": "sig_xyz",
+				},
+				map[string]interface{}{
+					"type": "text",
+					"text": "Done.",
+				},
+			},
+			"stop_reason": "end_turn",
+			"usage":       map[string]interface{}{"input_tokens": float64(10), "output_tokens": float64(20)},
+		})
+	}
+
+	adapter, server := newTestBedrockAdapter(t, handler)
+	defer server.Close()
+
+	// Use anthropic_bedrock key (not anthropic) for thinking
+	resp, err := adapter.Complete(context.Background(), Request{
+		Model:    "anthropic.claude-opus-4-6-v1:0",
+		Messages: []Message{UserMessage("Think about this")},
+		ProviderOptions: map[string]interface{}{
+			"anthropic_bedrock": map[string]interface{}{
+				"thinking": map[string]interface{}{"type": "enabled", "budget_tokens": 10000},
+			},
+		},
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "Done.", resp.Text())
+	assert.Equal(t, "Reasoning...", resp.Reasoning())
+}
+
 func TestAnthropicBedrockAdapterStreaming(t *testing.T) {
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		assert.Contains(t, r.URL.Path, "/invoke-with-response-stream")

@@ -242,6 +242,28 @@ func (a *AnthropicBedrockAdapter) Stream(ctx context.Context, req Request) (<-ch
 // buildRequestBody delegates to the Anthropic adapter for message format
 // translation, then applies Bedrock-specific modifications.
 func (a *AnthropicBedrockAdapter) buildRequestBody(req Request) ([]byte, error) {
+	// Forward relevant options from "anthropic_bedrock" to "anthropic" so the
+	// shared Anthropic adapter picks them up. Keys already set under
+	// "anthropic" take precedence (user explicitly targeting the format layer).
+	bedrockOpts, _ := req.ProviderOptions["anthropic_bedrock"].(map[string]interface{})
+	if bedrockOpts != nil {
+		anthropicOpts, _ := req.ProviderOptions["anthropic"].(map[string]interface{})
+		if anthropicOpts == nil {
+			anthropicOpts = make(map[string]interface{})
+		}
+		for _, key := range []string{"auto_cache", "thinking", "beta_headers"} {
+			if _, exists := anthropicOpts[key]; !exists {
+				if v, ok := bedrockOpts[key]; ok {
+					anthropicOpts[key] = v
+				}
+			}
+		}
+		if req.ProviderOptions == nil {
+			req.ProviderOptions = make(map[string]interface{})
+		}
+		req.ProviderOptions["anthropic"] = anthropicOpts
+	}
+
 	// Use the shared Anthropic adapter to build the body.
 	// Pass stream=false because Bedrock streaming is controlled by endpoint, not body field.
 	rawBody, _, err := a.format.buildRequestBody(req, false)
@@ -263,14 +285,49 @@ func (a *AnthropicBedrockAdapter) buildRequestBody(req Request) ([]byte, error) 
 	// Bedrock-specific: anthropic_version goes in the body, not a header
 	body["anthropic_version"] = "bedrock-2023-05-31"
 
-	// Allow override from provider options
-	if opts, ok := req.ProviderOptions["anthropic_bedrock"].(map[string]interface{}); ok {
-		if v, ok := opts["anthropic_version"].(string); ok {
+	// Apply Bedrock-specific overrides from provider options.
+	if bedrockOpts != nil {
+		if v, ok := bedrockOpts["anthropic_version"].(string); ok {
 			body["anthropic_version"] = v
+		}
+		// Bedrock supports TTL on cache checkpoints ("5m" or "1h").
+		if ttl, ok := bedrockOpts["cache_ttl"].(string); ok && ttl != "" {
+			injectCacheTTL(body, ttl)
 		}
 	}
 
 	return json.Marshal(body)
+}
+
+// setCacheTTL sets the TTL on all cache_control entries found in blocks.
+func setCacheTTL(blocks []interface{}, ttl string) {
+	for _, block := range blocks {
+		if m, ok := block.(map[string]interface{}); ok {
+			if cc, ok := m["cache_control"].(map[string]interface{}); ok {
+				cc["ttl"] = ttl
+			}
+		}
+	}
+}
+
+// injectCacheTTL adds a TTL value to all cache_control entries in the request body.
+// Bedrock supports "5m" (default) and "1h" TTLs for prompt cache checkpoints.
+func injectCacheTTL(body map[string]interface{}, ttl string) {
+	if system, ok := body["system"].([]interface{}); ok {
+		setCacheTTL(system, ttl)
+	}
+	if tools, ok := body["tools"].([]interface{}); ok {
+		setCacheTTL(tools, ttl)
+	}
+	if messages, ok := body["messages"].([]interface{}); ok {
+		for _, msg := range messages {
+			if m, ok := msg.(map[string]interface{}); ok {
+				if content, ok := m["content"].([]interface{}); ok {
+					setCacheTTL(content, ttl)
+				}
+			}
+		}
+	}
 }
 
 // parseResponse delegates to the Anthropic adapter since Bedrock returns
